@@ -154,7 +154,6 @@ def main():
                     print("⚠️ エラーまたは混雑を検知。次の30秒後チェックに期待します。")
                     continue
 
-                # 🛡️ エラー落ちを防ぐ安心のTry-Except。失敗しても全体をクラッシュさせずにログを残します。
                 try:
                     # 「この列車を変更」が出現するまで最大15秒待機
                     page.wait_for_selector("text=この列車を変更", timeout=15000)
@@ -162,17 +161,33 @@ def main():
                     print("⚠️ 'この列車を変更' ボタンが見つかりませんでした。画面遷移に失敗した可能性があります。")
                     print(f"   現在の表示URL: {page.url}")
                     print(f"   現在のページタイトル: {page.title()}")
-                    continue  # クラッシュさせずに次のチェック（30秒後）へ
+                    continue
 
                 change_buttons = page.locator("text=この列車を変更")
                 if change_buttons.count() == 0:
                     print("📭 サンライズ号が見つかりません。")
                     continue
 
-                # 「この列車を変更」をクリックして設備テーブルをロード
+                # 「この列車を変更」をクリック
                 change_buttons.first.click()
-                page.wait_for_selector("text=現在選択している列車", timeout=15000)
-                page.wait_for_load_state("networkidle")
+                
+                # 💡 【復元！】ポップアップが出たら「後の列車」をクリックする
+                try:
+                    page.wait_for_selector("text=後の列車", timeout=15000)
+                    page.click("text=後の列車")
+                    page.wait_for_load_state("networkidle")
+                except Exception as e:
+                    print("⚠️ '後の列車' ボタンのクリックに失敗しました。")
+                    continue
+
+                # 設備変更テーブルがロードされるのを待つ
+                try:
+                    page.wait_for_selector("text=現在選択している列車", timeout=15000)
+                except Exception as e:
+                    print("⚠️ '現在選択している列車' 画面のロードに失敗しました。")
+                    print(f"   現在の表示URL: {page.url}")
+                    print(f"   現在のページタイトル: {page.title()}")
+                    continue
 
                 # HTML解析
                 html = page.content()
@@ -234,7 +249,6 @@ def main():
                         "サンライズツイン禁煙", "サンライズツイン喫煙"
                     ]
                     for key in order:
-                        # 表示用のキー名に整形
                         disp_key = "シングル禁煙" if key == "single禁煙" else ("シングル喫煙" if key == "single喫煙" else key)
                         mark = rooms[key]
                         

@@ -133,7 +133,6 @@ def scrape_train_status(page_content, trains_status):
                     facility_key = "single喫煙" if is_smoking else "single禁煙"
                     
                 if facility_key and mark != "--":
-                    # すでに有効な空席マーク(○△◇)がある場合は×や--で上書きしない
                     if trains_status[base_name][facility_key] not in ["○", "△", "◇"]:
                         trains_status[base_name][facility_key] = mark
 
@@ -143,7 +142,7 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 泥仕合ステルス巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -184,10 +183,10 @@ def main():
     )
 
     direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
+    referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
 
-    # 🔥 15回叩き込む超高速リトライ連射ダイヤ
     max_attempts = 15
-    retry_delay_ms = 3000 # 弾かれたら3秒後に次を発射
+    retry_delay_ms = 3000
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -195,33 +194,36 @@ def main():
         page = context.new_page()
 
         try:
+            # 1️⃣ 【最重要】セッションの確立は「全工程で最初のこの1回のみ」！！
+            print("🔑 初期セッション（通行手形）を確立しています...")
+            page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
+            page.wait_for_load_state("networkidle")
+
             for attempt in range(max_attempts):
                 if not is_within_active_hours():
                     print("⏰ ループ中に稼働時間を過ぎたため、終了します。")
                     return
 
                 if attempt > 0:
-                    print(f"⏳ サーバー混雑対策：{retry_delay_ms/1000}秒後に超高速リロードを仕掛けます...")
+                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にクリーンリロードします...")
                     page.wait_for_timeout(retry_delay_ms)
 
-                print(f"🔄 超高速連打アタック {attempt + 1} / {max_attempts} 回目 実行中...")
+                print(f"🔄 クリーン連打アタック {attempt + 1} / {max_attempts} 回目...")
                 
-                # 1️⃣ セッション確立
-                page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
+                # 2️⃣ トップページに戻らず、同じセッションのまま直接リクエスト（Referer偽装付き）
+                page.goto(direct_url, referer=referer_url)
                 page.wait_for_load_state("networkidle")
 
-                # 2️⃣ ワープURLへ突撃
-                page.goto(direct_url)
-                page.wait_for_load_state("networkidle")
-
-                if is_e5489_error(page.content()):
-                    print("⚠️ 1ページ目で混雑画面（ご案内）を検知。即座にリトライへスライドします。")
+                current_html = page.content()
+                if is_e5489_error(current_html):
+                    print("⚠️ 混雑画面（ご案内）が返されました。セッションを壊さずそのまま次へスライドします。")
                     continue
 
                 try:
+                    # 画面がロードされるまで最大8秒待機
                     page.wait_for_selector(".changing-train-list, text=この列車を変更", timeout=8000)
                 except Exception as e:
-                    print("⚠️ 1ページ目のロードが遅延または混雑に阻まれました。次へ進みます。")
+                    print("⚠️ 画面の応答がタイムアウトしました。次へ進みます。")
                     continue
 
                 trains_status = {}
@@ -246,30 +248,29 @@ def main():
                     page.click("text=後の列車")
                     has_after_button = True
                 except Exception as e:
-                    print("ℹ️ '後の列車' ボタンがありません。最初の画面のみで判定します。")
+                    print("ℹ️ '後の列車' ボタンはありません。最初の画面のみで判定します。")
 
                 if has_after_button:
                     page.wait_for_load_state("networkidle")
                     
-                    # 💡 【重要】とりめしさん監修：画面が「ソロ」または「混雑」に切り替わるまで1秒ごとにホールド監視
                     is_loaded_correctly = False
                     for check_sec in range(6):
                         current_html = page.content()
                         if is_e5489_error(current_html):
-                            print("⚠️ 画面2への遷移中に混雑画面（ご案内）を検知しました。")
+                            print("⚠️ 画面2への遷移中に混雑を検知しました。")
                             break
                         if any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
-                            print(f"✅ 画面2の完全同期を確認しました（{check_sec}秒待機）。解析へ移ります。")
+                            print(f"✅ 画面2の完全同期を確認（{check_sec}秒待機）。")
                             is_loaded_correctly = True
                             break
                         page.wait_for_timeout(1000)
 
-                    # 📸 【Wスキャン②】確定した画面2を解析
+                    # 📸 【Wスキャン②】画面2を解析
                     if is_loaded_correctly:
                         print("📸 [スキャン②] 2番目の画面（ソロ・シングル等）を解析中...")
                         scrape_train_status(page.content(), trains_status)
                     else:
-                        print("⚠️ 画面2が正しくロードされなかったか、ラグが発生したためこの周回はスキップします。")
+                        print("⚠️ 画面2の同期に失敗したため、このアタックをスキップします。")
                         continue
 
                 # 空席判定
@@ -319,18 +320,18 @@ def main():
                 if any_vacant:
                     msg = (
                         f"【🚨 サンライズ空席速報！！】\n"
-                        f"とりめしさん、ハンターが激戦を制して空席をもぎ取りました！\n\n"
+                        f"とりめしさん、システム大成功です！空席を完全に検知しました！\n\n"
                         f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                         f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                         f"🔥 現在の全設備ステータス:\n"
                         f"===============================\n"
                         f"{status_text}"
                     )
-                    print(f"🎉 執念の空席検知！LINEへ即時送信して巡回を終了します。")
+                    print(f"🎉 完璧な空席検知！LINEへ通知を飛ばして終了します。")
                     send_line(msg)
                     return 
 
-            print(f"📭 {max_attempts}回の超高速連打を繰り出し、全画面確定スキャンを行いましたが、この時間は全て「満席」でした。")
+            print(f"📭 {max_attempts}回のセッション固定アタックを完了。この時間はすべて「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")

@@ -33,5 +33,5 @@ jobs:
         # 🔑 LINE通知用の宛先（前回のLINEボットの鍵を設定済み！）
         LINE_ACCESS_TOKEN: "+qNnn12KfaDxob2JvS8aK6tg8SNQp2iRR+e2I8S8qhdks6okOUmN8lqYxP1d9cRSFwpqJ/wW1sKPX9++iNj92LXRBZKklEmjVjK0Msw7LVXo3Skk5lVasb6rT2zBzlj28SwJ85raLPWHVXlNWrK8jgdB04t89/1O/w1cDnyilFU="
         LINE_USER_ID: "Ub1d15b78b0898bc8423f8cebe68ad1fa"
-        LINE_GROUP_ID: "C678b05e22996ff7ab1c4d62b1d376511"
+        LINE_GROUP_ID: ""
       run: python sunrise_hunter.py

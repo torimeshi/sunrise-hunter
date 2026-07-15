@@ -74,6 +74,76 @@ def parse_mark(td):
     else:
         return "--"
 
+def scrape_train_status(page_content, trains_status):
+    """🛡️ テーブル構造を動的に解析して安全にすべての設備マークを取得するスキャンエンジン"""
+    soup = BeautifulSoup(page_content, "html.parser")
+    rows = soup.find_all("tr")
+
+    for row in rows:
+        tds = row.find_all(["td", "th"])
+        sunrise_cell_idx = -1
+        train_raw_name = ""
+        
+        for idx, td in enumerate(tds):
+            if "サンライズ" in td.get_text():
+                sunrise_cell_idx = idx
+                train_raw_name = td.get_text().strip().replace("\n", "").replace(" ", "")
+                break
+        
+        if sunrise_cell_idx == -1:
+            continue
+
+        right_tds = tds[sunrise_cell_idx + 1:]
+        if len(right_tds) < 1:
+            continue
+
+        base_name = re.sub(r'（.+?）|\(.+?\)', '', train_raw_name).strip()
+
+        if base_name not in trains_status:
+            trains_status[base_name] = {
+                "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
+                "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
+                "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
+                "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
+            }
+
+        # 1. ソロ：[設備名, 禁煙] のため、right_tds[1] が禁煙マーク
+        if "ソロ" in train_raw_name:
+            if len(right_tds) >= 2:
+                trains_status[base_name]["ソロ禁煙"] = parse_mark(right_tds[1])
+                
+        # 2. シングル：[設備名, 禁煙, 喫煙] のため、right_tds[1] が禁煙、right_tds[2] が喫煙
+        elif "シングル" in train_raw_name and "ツイン" not in train_raw_name and "デラックス" not in train_raw_name:
+            if len(right_tds) >= 3:
+                trains_status[base_name]["single禁煙"] = parse_mark(right_tds[1])
+                trains_status[base_name]["single喫煙"] = parse_mark(right_tds[2])
+            elif len(right_tds) >= 2:
+                trains_status[base_name]["single禁煙"] = parse_mark(right_tds[1])
+                
+        # 3. サンライズツイン：[設備名, 禁煙, 喫煙] のため、right_tds[1] が禁煙、right_tds[2] が喫煙
+        elif "サツイン" in train_raw_name or "サンライズツイン" in train_raw_name:
+            if len(right_tds) >= 3:
+                trains_status[base_name]["サンライズツイン禁煙"] = parse_mark(right_tds[1])
+                trains_status[base_name]["サンライズツイン喫煙"] = parse_mark(right_tds[2])
+            elif len(right_tds) >= 2:
+                trains_status[base_name]["サンライズツイン禁煙"] = parse_mark(right_tds[1])
+                
+        # 4. シングルツイン：[設備名, 禁煙, 喫煙]
+        elif "シングルツイン" in train_raw_name:
+            if len(right_tds) >= 3:
+                trains_status[base_name]["シングルツイン禁煙"] = parse_mark(right_tds[1])
+                trains_status[base_name]["シングルツイン喫煙"] = parse_mark(right_tds[2])
+            elif len(right_tds) >= 2:
+                trains_status[base_name]["シングルツイン禁煙"] = parse_mark(right_tds[1])
+                
+        # 5. シングルデラックス：[設備名, 禁煙, 喫煙]
+        elif "デラックス" in train_raw_name or "シングルＤＸ" in train_raw_name:
+            if len(right_tds) >= 3:
+                trains_status[base_name]["シングルデラックス禁煙"] = parse_mark(right_tds[1])
+                trains_status[base_name]["シングルデラックス喫煙"] = parse_mark(right_tds[2])
+            elif len(right_tds) >= 2:
+                trains_status[base_name]["シングルデラックス禁煙"] = parse_mark(right_tds[1])
+
 def main():
     if not is_within_active_hours():
         print("💤 現在は稼働時間外（5:29〜23:51）のため、何もせずに即時終了します。")
@@ -159,8 +229,6 @@ def main():
                     page.wait_for_selector("text=この列車を変更", timeout=15000)
                 except Exception as e:
                     print("⚠️ 'この列車を変更' ボタンが見つかりませんでした。画面遷移に失敗した可能性があります。")
-                    print(f"   現在の表示URL: {page.url}")
-                    print(f"   現在のページタイトル: {page.title()}")
                     continue
 
                 change_buttons = page.locator("text=この列車を変更")
@@ -171,71 +239,39 @@ def main():
                 # 「この列車を変更」をクリック
                 change_buttons.first.click()
                 
-                # 💡 【復元！】ポップアップが出たら「後の列車」をクリックする
+                trains_status = {}
+
+                # 💡 【ダブルスキャン：第1波】
+                # 「後の列車」を押す前の最初の設備画面を解析
                 try:
-                    page.wait_for_selector("text=後の列車", timeout=15000)
+                    page.wait_for_selector("text=現在選択している列車", timeout=10000)
+                    page.wait_for_load_state("networkidle")
+                    print("📸 [スキャン①] 最初の画面（ノビノビ・ツイン・デラックス等）を解析中...")
+                    scrape_train_status(page.content(), trains_status)
+                except Exception as e:
+                    print("⚠️ 最初の設備画面のロードに失敗しました。")
+
+                # 💡 【ダブルスキャン：第2波】
+                # 「後の列車」ボタンがあれば、それをクリックして2番目の設備画面へ進む
+                has_after_button = False
+                try:
+                    page.wait_for_selector("text=後の列車", timeout=5000)
+                    print("👉 '後の列車' ボタンを発見。画面2（ソロ・シングル等）へ進みます...")
                     page.click("text=後の列車")
                     page.wait_for_load_state("networkidle")
+                    has_after_button = True
                 except Exception as e:
-                    print("⚠️ '後の列車' ボタンのクリックに失敗しました。")
-                    continue
+                    print("ℹ️ '後の列車' ボタンはありません。最初の画面のみでチェックを続行します。")
 
-                # 設備変更テーブルがロードされるのを待つ
-                try:
-                    page.wait_for_selector("text=現在選択している列車", timeout=15000)
-                except Exception as e:
-                    print("⚠️ '現在選択している列車' 画面のロードに失敗しました。")
-                    print(f"   現在の表示URL: {page.url}")
-                    print(f"   現在のページタイトル: {page.title()}")
-                    continue
-
-                # HTML解析
-                html = page.content()
-                soup = BeautifulSoup(html, "html.parser")
-                rows = soup.find_all("tr")
-
-                trains_status = {}
-                for row in rows:
-                    tds = row.find_all(["td", "th"])
-                    sunrise_cell_idx = -1
-                    train_raw_name = ""
-                    
-                    for idx, td in enumerate(tds):
-                        if "サンライズ" in td.get_text():
-                            sunrise_cell_idx = idx
-                            train_raw_name = td.get_text().strip().replace("\n", "").replace(" ", "")
-                            break
-                    
-                    if sunrise_cell_idx == -1:
-                        continue
-
-                    right_tds = tds[sunrise_cell_idx + 1:]
-                    if len(right_tds) < 5:
-                        continue
-
-                    base_name = re.sub(r'（.+?）|\(.+?\)', '', train_raw_name).strip()
-
-                    if base_name not in trains_status:
-                        trains_status[base_name] = {
-                            "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
-                            "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
-                            "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
-                            "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
-                        }
-
-                    if "ソロ" in train_raw_name:
-                        trains_status[base_name]["ソロ禁煙"] = parse_mark(right_tds[1])
-                    elif "シングル" in train_raw_name and "ツイン" not in train_raw_name and "デラックス" not in train_raw_name:
-                        trains_status[base_name]["single禁煙"] = parse_mark(right_tds[1])
-                        trains_status[base_name]["single喫煙"] = parse_mark(right_tds[2])
-                    elif "サツイン" in train_raw_name or "サンライズツイン" in train_raw_name:
-                        trains_status[base_name]["サンライズツイン禁煙"] = parse_mark(right_tds[1])
-                        trains_status[base_name]["サンライズツイン喫煙"] = parse_mark(right_tds[2])
-                    else:
-                        trains_status[base_name]["シングルツイン禁煙"] = parse_mark(right_tds[1])
-                        trains_status[base_name]["シングルツイン喫煙"] = parse_mark(right_tds[2])
-                        trains_status[base_name]["シングルデラックス禁煙"] = parse_mark(right_tds[3])
-                        trains_status[base_name]["シングルデラックス喫煙"] = parse_mark(right_tds[4])
+                # 後の列車をクリックした場合、その画面もスキャンしてデータをマージ
+                if has_after_button:
+                    try:
+                        page.wait_for_selector("text=現在選択している列車", timeout=10000)
+                        page.wait_for_load_state("networkidle")
+                        print("📸 [スキャン②] 2番目の画面を解析中...")
+                        scrape_train_status(page.content(), trains_status)
+                    except Exception as e:
+                        print("⚠️ 2番目の設備画面のロードに失敗しました。")
 
                 any_vacant = False
                 status_text = ""
@@ -243,14 +279,14 @@ def main():
                 for t_name, rooms in trains_status.items():
                     status_text += f"◆ {t_name}\n-------------------------------\n"
                     order = [
-                        "ソロ禁煙", "single禁煙", "single喫煙", 
+                        "ソロ禁煙", "シングル禁煙", "シングル喫煙", 
                         "シングルツイン禁煙", "シングルツイン喫煙", 
                         "シングルデラックス禁煙", "シングルデラックス喫煙", 
                         "サンライズツイン禁煙", "サンライズツイン喫煙"
                     ]
                     for key in order:
-                        disp_key = "シングル禁煙" if key == "single禁煙" else ("シングル喫煙" if key == "single喫煙" else key)
-                        mark = rooms[key]
+                        lookup_key = "single禁煙" if key == "シングル禁煙" else ("single喫煙" if key == "シングル喫煙" else key)
+                        mark = rooms[lookup_key]
                         
                         alert = ""
                         if mark in ["○", "△"]:
@@ -260,7 +296,7 @@ def main():
                             alert = " 🎉空席(◇)!!"
                             any_vacant = True
                         
-                        status_text += f"・{disp_key} ➡️ [ {mark} ]{alert}\n"
+                        status_text += f"・{key} ➡️ [ {mark} ]{alert}\n"
                     status_text += "===============================\n"
 
                 if any_vacant:

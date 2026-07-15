@@ -1,0 +1,37 @@
+name: Sunrise Cancel Hunter (Stealth)
+
+on:
+  schedule:
+    # 💡 日本時間 5:20〜8:55 (UTC 20:20〜23:55)
+    - cron: '*/5 20-23 * * *'
+    # 💡 日本時間 9:00〜23:55 (UTC 0:00〜14:55)
+    - cron: '*/5 0-14 * * *'
+  workflow_dispatch: # 手動実行用ボタン
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests playwright beautifulsoup4
+        playwright install chromium
+
+    - name: Run Hunter
+      env:
+        # 🔗 とりめしさんのスプレッドシートCSVリンク（セットアップ済み！）
+        CONFIG_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vSX12jD6ygnA3WdGUMVzaXQBMyAXJdzPOdVFv4JVTUamVSyhxn8TZHiZL1sTwDJ3xut1Up1m7AGWHSK/pub?gid=2106773244&single=true&output=csv"
+        # 🔑 LINE通知用の宛先（前回のLINEボットの鍵を設定済み！）
+        LINE_ACCESS_TOKEN: "+qNnn12KfaDxob2JvS8aK6tg8SNQp2iRR+e2I8S8qhdks6okOUmN8lqYxP1d9cRSFwpqJ/wW1sKPX9++iNj92LXRBZKklEmjVjK0Msw7LVXo3Skk5lVasb6rT2zBzlj28SwJ85raLPWHVXlNWrK8jgdB04t89/1O/w1cDnyilFU="
+        LINE_USER_ID: "Ub1d15b78b0898bc8423f8cebe68ad1fa"
+        LINE_GROUP_ID: "C678b05e22996ff7ab1c4d62b1d376511"
+      run: python sunrise_hunter.py

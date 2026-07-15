@@ -192,7 +192,6 @@ def main():
     trains_status = {}
 
     with sync_playwright() as p:
-        # ブラウザ自体は1起動
         browser = p.chromium.launch(headless=True)
 
         try:
@@ -205,12 +204,10 @@ def main():
 
                 print(f"🔄 【完全独立ウィンドウ】アタック {attempt + 1} / {max_attempts} 回目 発射...")
                 
-                # 💡 【超重要】1回ごとにコンテキスト（クッキー・セッション）を「完全リセット」して使い捨てる！！
                 context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 page = context.new_page()
                 
                 try:
-                    # 余計なトップメニューは一切踏まない。真っ新な状態でいきなり直行！
                     page.goto(direct_url, referer=referer_url)
                     page.wait_for_load_state("networkidle")
 
@@ -225,10 +222,9 @@ def main():
                         print("    ⚠️ 画面の応答が遅延したため、破棄して次へ進みます。")
                         continue
 
-                    # 📸 【Wスキャン①】最初の画面を解析
                     print("    📸 [スキャン①] 最初の画面を解析中...")
                     scrape_train_status(page.content(), trains_status)
-                    success_scrape_at_least_once = True # 本物の画面に到達できた証明
+                    success_scrape_at_least_once = True
 
                     change_buttons = page.locator("text=この列車を変更")
                     if change_buttons.count() == 0:
@@ -260,7 +256,6 @@ def main():
                                 break
                             page.wait_for_timeout(1000)
 
-                        # 📸 【Wスキャン②】画面2を解析
                         if is_loaded_correctly:
                             print("    📸 [スキャン②] 2番目の画面（ソロ・シングル等）を解析中...")
                             scrape_train_status(page.content(), trains_status)
@@ -268,16 +263,13 @@ def main():
                 except Exception as attempt_err:
                     print(f"    ⚠️ 個別アタック中に通信エラーが発生しました。")
                 finally:
-                    # 💡 使い終わったクッキーをこの瞬間にこの世から完全に消滅させる
                     context.close()
 
-            # 💡 15回完全に独立して突撃しても全滅した場合の最終仕分け
             if not success_scrape_at_least_once:
                 print("\n❌ 【真実のログ】15回すべてがサーバー混雑（ご案内）に阻まれ、一度も空席テーブルに辿り着けませんでした。")
                 print("    サーバーが限界を迎えています。この実行は『失敗（Fail）』とします。")
                 sys.exit(1)
 
-            # 1回でも開けていた場合のみ、空席判定へ
             any_vacant = False
             status_text = ""
 
@@ -325,7 +317,7 @@ def main():
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
-                    f"とりめしさん、ついに混雑の壁を完全に突破して空席を検知しました！\n\n"
+                    f"お目当てのキャンセルが放流されました！\n\n"
                     f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"

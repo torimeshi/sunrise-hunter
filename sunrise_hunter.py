@@ -142,18 +142,29 @@ def main():
 
                 print(f"🔄 チェック {attempt + 1} 回目 実行中...")
                 
-                # 🚀 直接検索結果画面へワープ！
+                # 1️⃣ まずトップメニューにアクセスし、セッション（クッキー）を確立する！
+                page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
+                page.wait_for_load_state("networkidle")
+
+                # 2️⃣ そのセッションを保持した状態で、直行ワープURLへアクセス！
                 page.goto(direct_url)
                 page.wait_for_load_state("networkidle")
 
                 if is_e5489_error(page.content()):
-                    print("⚠️ エラーまたは混雑を検知。次へ進みます。")
+                    print("⚠️ エラーまたは混雑を検知。次の30秒後チェックに期待します。")
                     continue
 
-                # 「この列車を変更」を待機
-                page.wait_for_selector("text=この列車を変更", timeout=15000)
+                # 🛡️ エラー落ちを防ぐ安心のTry-Except。失敗しても全体をクラッシュさせずにログを残します。
+                try:
+                    # 「この列車を変更」が出現するまで最大15秒待機
+                    page.wait_for_selector("text=この列車を変更", timeout=15000)
+                except Exception as e:
+                    print("⚠️ 'この列車を変更' ボタンが見つかりませんでした。画面遷移に失敗した可能性があります。")
+                    print(f"   現在の表示URL: {page.url}")
+                    print(f"   現在のページタイトル: {page.title()}")
+                    continue  # クラッシュさせずに次のチェック（30秒後）へ
+
                 change_buttons = page.locator("text=この列車を変更")
-                
                 if change_buttons.count() == 0:
                     print("📭 サンライズ号が見つかりません。")
                     continue
@@ -217,14 +228,15 @@ def main():
                 for t_name, rooms in trains_status.items():
                     status_text += f"◆ {t_name}\n-------------------------------\n"
                     order = [
-                        "ソロ禁煙", "シングル禁煙", "シングル喫煙", 
+                        "ソロ禁煙", "single禁煙", "single喫煙", 
                         "シングルツイン禁煙", "シングルツイン喫煙", 
                         "シングルデラックス禁煙", "シングルデラックス喫煙", 
                         "サンライズツイン禁煙", "サンライズツイン喫煙"
                     ]
                     for key in order:
-                        lookup_key = "single禁煙" if key == "シングル禁煙" else ("single喫煙" if key == "シングル喫煙" else key)
-                        mark = rooms[lookup_key]
+                        # 表示用のキー名に整形
+                        disp_key = "シングル禁煙" if key == "single禁煙" else ("シングル喫煙" if key == "single喫煙" else key)
+                        mark = rooms[key]
                         
                         alert = ""
                         if mark in ["○", "△"]:
@@ -234,7 +246,7 @@ def main():
                             alert = " 🎉空席(◇)!!"
                             any_vacant = True
                         
-                        status_text += f"・{key} ➡️ [ {mark} ]{alert}\n"
+                        status_text += f"・{disp_key} ➡️ [ {mark} ]{alert}\n"
                     status_text += "===============================\n"
 
                 if any_vacant:

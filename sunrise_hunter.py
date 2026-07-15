@@ -142,7 +142,7 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 独立クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -187,114 +187,118 @@ def main():
 
     max_attempts = 15
     retry_delay_ms = 3000
+    
+    success_scrape_at_least_once = False
+    trains_status = {}
 
     with sync_playwright() as p:
+        # ブラウザ自体は1起動
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        page = context.new_page()
 
         try:
-            # 1️⃣ 【最重要】セッションの確立は「全工程で最初のこの1回のみ」！！
-            print("🔑 初期セッション（通行手形）を確立しています...")
-            page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
-            page.wait_for_load_state("networkidle")
-
             for attempt in range(max_attempts):
                 if not is_within_active_hours():
-                    print("⏰ ループ中に稼働時間を過ぎたため、終了します。")
                     return
 
                 if attempt > 0:
-                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にクリーンリロードします...")
                     page.wait_for_timeout(retry_delay_ms)
 
-                print(f"🔄 クリーン連打アタック {attempt + 1} / {max_attempts} 回目...")
+                print(f"🔄 【完全独立ウィンドウ】アタック {attempt + 1} / {max_attempts} 回目 発射...")
                 
-                # 2️⃣ トップページに戻らず、同じセッションのまま直接リクエスト（Referer偽装付き）
-                page.goto(direct_url, referer=referer_url)
-                page.wait_for_load_state("networkidle")
-
-                current_html = page.content()
-                if is_e5489_error(current_html):
-                    print("⚠️ 混雑画面（ご案内）が返されました。セッションを壊さずそのまま次へスライドします。")
-                    continue
-
-                try:
-                    # 画面がロードされるまで最大8秒待機
-                    page.wait_for_selector(".changing-train-list, text=この列車を変更", timeout=8000)
-                except Exception as e:
-                    print("⚠️ 画面の応答がタイムアウトしました。次へ進みます。")
-                    continue
-
-                trains_status = {}
-
-                # 📸 【Wスキャン①】最初の画面を解析
-                print("📸 [スキャン①] 最初の画面を解析中...")
-                scrape_train_status(page.content(), trains_status)
-
-                change_buttons = page.locator("text=この列車を変更")
-                if change_buttons.count() == 0:
-                    print("📭 サンライズ号のボタンが見つかりません。")
-                    continue
-
-                # 「この列車を変更」をクリック
-                change_buttons.first.click()
+                # 💡 【超重要】1回ごとにコンテキスト（クッキー・セッション）を「完全リセット」して使い捨てる！！
+                context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                page = context.new_page()
                 
-                # 「後の列車」ボタンを探してクリック
-                has_after_button = False
                 try:
-                    page.wait_for_selector("text=後の列車", timeout=4000)
-                    print("👉 '後の列車' ボタンを発見。画面2へ進みます...")
-                    page.click("text=後の列車")
-                    has_after_button = True
-                except Exception as e:
-                    print("ℹ️ '後の列車' ボタンはありません。最初の画面のみで判定します。")
-
-                if has_after_button:
+                    # 余計なトップメニューは一切踏まない。真っ新な状態でいきなり直行！
+                    page.goto(direct_url, referer=referer_url)
                     page.wait_for_load_state("networkidle")
-                    
-                    is_loaded_correctly = False
-                    for check_sec in range(6):
-                        current_html = page.content()
-                        if is_e5489_error(current_html):
-                            print("⚠️ 画面2への遷移中に混雑を検知しました。")
-                            break
-                        if any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
-                            print(f"✅ 画面2の完全同期を確認（{check_sec}秒待機）。")
-                            is_loaded_correctly = True
-                            break
-                        page.wait_for_timeout(1000)
 
-                    # 📸 【Wスキャン②】画面2を解析
-                    if is_loaded_correctly:
-                        print("📸 [スキャン②] 2番目の画面（ソロ・シングル等）を解析中...")
-                        scrape_train_status(page.content(), trains_status)
-                    else:
-                        print("⚠️ 画面2の同期に失敗したため、このアタックをスキップします。")
+                    current_html = page.content()
+                    if is_e5489_error(current_html):
+                        print("    ⚠️ 混雑画面（ご案内）を検知。この使い捨てブラウザを即座に破棄します。")
                         continue
 
-                # 空席判定
-                any_vacant = False
-                status_text = ""
+                    try:
+                        page.wait_for_selector(".changing-train-list, text=この列車を変更", timeout=8000)
+                    except Exception as e:
+                        print("    ⚠️ 画面の応答が遅延したため、破棄して次へ進みます。")
+                        continue
 
-                for t_name, rooms in trains_status.items():
-                    status_text += f"◆ {t_name}\n-------------------------------\n"
-                    order = [
-                        "ノビノビ禁煙", "ソロ禁煙", "single禁煙", "single喫煙", 
-                        "シングルツイン禁煙", "シングルツイン喫煙", 
-                        "シングルデラックス禁煙", "シングルデラックス喫煙", 
-                        "サンライズツイン禁煙", "サンライズツイン喫煙"
-                    ]
-                    for key in order:
-                        disp_key = "ノビノビ禁煙" if key == "ノビノビ禁煙" else (
-                            "ソロ禁煙" if key == "ソロ禁煙" else (
-                                "シングル禁煙" if key == "single禁煙" else (
-                                    "シングル喫煙" if key == "single喫煙" else (
-                                        "シングルツイン禁煙" if key == "シングルツイン禁煙" else (
-                                            "シングルツイン喫煙" if key == "シングルツイン喫煙" else (
-                                                "シングルデラックス禁煙" if key == "シングルデラックス禁煙" else (
-                                                    "シングルデラックス喫煙" if key == "シングルデラックス喫煙" else (
-                                                        "サンライズツイン禁煙" if key == "サンライズツイン禁煙" else "サンライズツイン喫煙"
+                    # 📸 【Wスキャン①】最初の画面を解析
+                    print("    📸 [スキャン①] 最初の画面を解析中...")
+                    scrape_train_status(page.content(), trains_status)
+                    success_scrape_at_least_once = True # 本物の画面に到達できた証明
+
+                    change_buttons = page.locator("text=この列車を変更")
+                    if change_buttons.count() == 0:
+                        continue
+
+                    change_buttons.first.click()
+                    
+                    has_after_button = False
+                    try:
+                        page.wait_for_selector("text=後の列車", timeout=4000)
+                        print("    👉 '後の列車' ボタンを発見。画面2へ進みます...")
+                        page.click("text=後の列車")
+                        has_after_button = True
+                    except Exception as e:
+                        pass
+
+                    if has_after_button:
+                        page.wait_for_load_state("networkidle")
+                        
+                        is_loaded_correctly = False
+                        for check_sec in range(6):
+                            current_html = page.content()
+                            if is_e5489_error(current_html):
+                                print("    ⚠️ 画面2への遷移中に混雑を検知しました。")
+                                break
+                            if any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
+                                print(f"    ✅ 画面2の完全同期を確認（{check_sec}秒待機）。")
+                                is_loaded_correctly = True
+                                break
+                            page.wait_for_timeout(1000)
+
+                        # 📸 【Wスキャン②】画面2を解析
+                        if is_loaded_correctly:
+                            print("    📸 [スキャン②] 2番目の画面（ソロ・シングル等）を解析中...")
+                            scrape_train_status(page.content(), trains_status)
+                            
+                except Exception as attempt_err:
+                    print(f"    ⚠️ 個別アタック中に通信エラーが発生しました。")
+                finally:
+                    # 💡 使い終わったクッキーをこの瞬間にこの世から完全に消滅させる
+                    context.close()
+
+            # 💡 15回完全に独立して突撃しても全滅した場合の最終仕分け
+            if not success_scrape_at_least_once:
+                print("\n❌ 【真実のログ】15回すべてがサーバー混雑（ご案内）に阻まれ、一度も空席テーブルに辿り着けませんでした。")
+                print("    サーバーが限界を迎えています。この実行は『失敗（Fail）』とします。")
+                sys.exit(1)
+
+            # 1回でも開けていた場合のみ、空席判定へ
+            any_vacant = False
+            status_text = ""
+
+            for t_name, rooms in trains_status.items():
+                status_text += f"◆ {t_name}\n-------------------------------\n"
+                order = [
+                    "ノビノビ禁煙", "ソロ禁煙", "single禁煙", "single喫煙", 
+                    "シングルツイン禁煙", "シングルツイン喫煙", 
+                    "シングルデラックス禁煙", "シングルデラックス喫煙", 
+                    "サンライズツイン禁煙", "サンライズツイン喫煙"
+                ]
+                for key in order:
+                    disp_key = "ノビノビ禁煙" if key == "ノビノビ禁煙" else (
+                        "ソロ禁煙" if key == "ソロ禁煙" else (
+                            "シングル禁煙" if key == "single禁煙" else (
+                                "シングル喫煙" if key == "single喫煙" else (
+                                    "シングルツイン禁煙" if key == "シングルツイン禁煙" else (
+                                        "シングルツイン喫煙" if key == "シングルツイン喫煙" else (
+                                            "シングルデラックス禁煙" if key == "シングルデラックス禁煙" else (
+                                                "シングルデラックス喫煙" if key == "シングルデラックス喫煙" else (
+                                                    "サンライズツイン禁煙" if key == "サンライズツイン禁煙" else "サンライズツイン喫煙"
                                                     )
                                                 )
                                             )
@@ -303,39 +307,41 @@ def main():
                                 )
                             )
                         )
-                        
-                        mark = rooms.get(key, "--")
-                        
-                        alert = ""
-                        if mark in ["○", "△"]:
-                            alert = " 🎉空席!!"
-                            any_vacant = True
-                        elif mark == "◇":
-                            alert = " 🎉空席(◇)!!"
-                            any_vacant = True
-                        
-                        status_text += f"・{disp_key} ➡️ [ {mark} ]{alert}\n"
-                    status_text += "===============================\n"
-
-                if any_vacant:
-                    msg = (
-                        f"【🚨 サンライズ空席速報！！】\n"
-                        f"とりめしさん、システム大成功です！空席を完全に検知しました！\n\n"
-                        f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
-                        f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
-                        f"🔥 現在の全設備ステータス:\n"
-                        f"===============================\n"
-                        f"{status_text}"
                     )
-                    print(f"🎉 完璧な空席検知！LINEへ通知を飛ばして終了します。")
-                    send_line(msg)
-                    return 
+                    
+                    mark = rooms.get(key, "--")
+                    
+                    alert = ""
+                    if mark in ["○", "△"]:
+                        alert = " 🎉空席!!"
+                        any_vacant = True
+                    elif mark == "◇":
+                        alert = " 🎉空席(◇)!!"
+                        any_vacant = True
+                    
+                    status_text += f"・{disp_key} ➡️ [ {mark} ]{alert}\n"
+                status_text += "===============================\n"
 
-            print(f"📭 {max_attempts}回のセッション固定アタックを完了。この時間はすべて「満席」でした。")
+            if any_vacant:
+                msg = (
+                    f"【🚨 サンライズ空席速報！！】\n"
+                    f"とりめしさん、ついに混雑の壁を完全に突破して空席を検知しました！\n\n"
+                    f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
+                    f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
+                    f"🔥 現在の全設備ステータス:\n"
+                    f"===============================\n"
+                    f"{status_text}"
+                )
+                print(f"🎉 混雑をすり抜け、本物の画面で空席を検知！LINEへ通知します。")
+                send_line(msg)
+                return 
+
+            print("\n📭 混雑の隙間を突いて画面の取得に成功しましたが、現時点ではすべて本当に「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")
             traceback.print_exc()
+            sys.exit(1)
         finally:
             browser.close()
 

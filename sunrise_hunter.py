@@ -60,112 +60,158 @@ def is_e5489_error(page_content):
     ]
     return any(k in page_content for k in error_keywords)
 
-def parse_mark(td):
-    """セルの文字を綺麗なマークに変換する"""
-    text = td.get_text().strip()
-    if "○" in text or "内車" in text:
-        return "○"
-    elif "△" in text:
-        return "△"
-    elif "◇" in text:
-        return "◇"  # 日付またぎ特殊空席マーク
-    elif "×" in text:
-        return "×"
-    else:
-        return "--"
-
 def scrape_train_status(page_content, trains_status):
-    """🛡️ テーブル構造を動的に解析して安全にすべての設備マークを取得するスキャンエンジン"""
+    """🛡️ とりめしさん提供のHTML構造に完全特化した無敵のスキャンエンジン"""
     soup = BeautifulSoup(page_content, "html.parser")
-    tables = soup.find_all("table")
     
-    for table in tables:
-        if "サンライズ" not in table.get_text():
-            continue
-            
-        # 1. 設備の列ヘッダー（TH）を動的に探す
-        facility_headers = []
-        for tr in table.find_all("tr"):
-            cells = tr.find_all(["th", "td"])
-            row_text = "".join([c.get_text() for c in cells])
-            # ノビノビ・シングル等のいずれかを含み、かつ「サンライズ」という文字を含まない行＝ヘッダー行
-            if any(k in row_text for k in ["ノビノビ", "シングル", "ソロ", "ツイン", "デラックス", "ＤＸ"]) and not any(k in row_text for k in ["サンライズ"]):
-                for c in cells:
-                    c_text = c.get_text().strip().replace("\n", "").replace(" ", "")
-                    # 余分な列をスキップ
-                    if any(k in c_text for k in ["選択", "列車", "発着", "時間", "月日", "おとな", "設備"]):
-                        continue
-                    facility_headers.append(c_text)
-                break
+    # 💡 パターン1：キャンペーン用カードリスト構造（スマホ・レスポンシブ画面）
+    lists = soup.find_all("ul", class_="changing-train-list")
+    if lists:
+        print("📱 [解析] サンライズ専用カードリスト構造を検出しました。スキャンを開始します。")
+        for u_list in lists:
+            items = u_list.find_all("li", recursive=False)
+            for item in items:
+                header_train = item.find(class_="train-info-heading__train")
+                if not header_train:
+                    continue
+                header_text = header_train.get_text().strip().replace(" ", "").replace("\n", "")
                 
-        if not facility_headers:
-            continue
-            
-        print(f"📊 解析されたヘッダー列: {facility_headers}")
-        
-        # 2. 列のインデックスと内部キーのマッピングを作成
-        col_map = {}
-        for idx, h_text in enumerate(facility_headers):
-            is_smoking = "喫煙" in h_text
-            facility_key = None
-            
-            if "ノビノビ" in h_text:
-                facility_key = "ノビノビ禁煙"
-            elif "シングルツイン" in h_text:
-                facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
-            elif "デラックス" in h_text or "ＤＸ" in h_text:
-                facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
-            elif "サンライズツイン" in h_text or "サツイン" in h_text:
-                facility_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
-            elif "ソロ" in h_text:
-                facility_key = "ソロ禁煙"
-            elif "シングル" in h_text:
-                facility_key = "single喫煙" if is_smoking else "single禁煙"
-            
-            if facility_key:
-                col_map[idx] = facility_key
+                # 列車名と個室カテゴリ（ソロ・シングル等）を動的に分離
+                base_name = re.sub(r'（.+?）|\(.+?\)', '', header_text).strip().replace("特急", "")
+                category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
+                if not category_match:
+                    continue
+                category = category_match.group(1) or category_match.group(2)
                 
-        print(f"⚙️ 生成されたマッピング: {col_map}")
-        
-        # 3. データの読み取りとマージ
-        rows = table.find_all("tr")
-        for row in rows:
-            tds = row.find_all(["td", "th"])
-            if not tds:
-                continue
-            
-            # 「サンライズ」が含まれるセルを特定
-            train_cell_idx = -1
-            train_raw_name = ""
-            for idx, td in enumerate(tds):
-                td_text = td.get_text().strip().replace("\n", "").replace(" ", "")
-                if "サンライズ" in td_text:
-                    train_cell_idx = idx
-                    train_raw_name = td_text
-                    break
-            
-            if train_cell_idx == -1:
-                continue
+                if base_name not in trains_status:
+                    trains_status[base_name] = {
+                        "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
+                        "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
+                        "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
+                        "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
+                    }
                 
-            # 列車名より右側にある、空席記号のセルを抽出
-            right_tds = tds[train_cell_idx + 1:]
-            base_name = re.sub(r'（.+?）|\(.+?\)', '', train_raw_name).strip()
-            base_name = base_name.replace("特急", "").strip()
-            
-            if base_name not in trains_status:
-                trains_status[base_name] = {
-                    "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
-                    "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
-                    "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
-                    "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
-                }
-                
-            for col_idx, facility_key in col_map.items():
-                if col_idx < len(right_tds):
-                    mark = parse_mark(right_tds[col_idx])
-                    # すでに他のスキャンで有効なマークが入っている場合は上書きしない
-                    if mark != "--":
+                # 各設備ボックスをループ
+                boxes = item.find_all(class_="changing-train-box")
+                for box in boxes:
+                    box_text = box.get_text().strip().replace(" ", "").replace("\n", "")
+                    is_smoking = "喫煙" in box_text
+                    
+                    # 記号の判定（画像alt属性およびファイル名から二重判定）
+                    mark = "--"
+                    status_div = box.find(class_="changing-train-box__status")
+                    if status_div:
+                        img = status_div.find("img")
+                        if img:
+                            alt_text = img.get("alt", "")
+                            src_text = img.get("src", "")
+                            if "空席あり" in alt_text or "○" in alt_text or "vacant" in src_text:
+                                mark = "○"
+                            elif "残りわずか" in alt_text or "△" in alt_text or "almost" in src_text:
+                                mark = "△"
+                            elif "残席なし" in alt_text or "×" in alt_text or "unavailable" in src_text:
+                                mark = "×"
+                            elif "◇" in alt_text or "事前申込" in alt_text or "undefined" in src_text:
+                                mark = "◇"
+                    
+                    # 万が一画像が読めなくても、disabledクラスがあれば満席判定にする
+                    if mark == "--" and "disabled" in "".join(box.get("class", [])):
+                        mark = "×"
+                        
+                    # 内部キーへのマッピング
+                    facility_key = None
+                    if "ソロ" in category:
+                        facility_key = "ソロ禁煙"
+                    elif "シングルツイン" in category:
+                        facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
+                    elif "デラックス" in category or "ＤＸ" in category:
+                        facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
+                    elif "サツイン" in category or "サンライズツイン" in category:
+                        facility_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
+                    elif "ノビノビ" in category:
+                        facility_key = "ノビノビ禁煙"
+                    elif "シングル" in category:
+                        facility_key = "single喫煙" if is_smoking else "single禁煙"
+                        
+                    if facility_key and mark != "--":
                         trains_status[base_name][facility_key] = mark
+        return
+
+    # 💡 パターン2：クラシックテーブル構造（念のためのPCデスクトップ用フォールバック）
+    tables = soup.find_all("table")
+    if tables:
+        print("💻 [解析] デスクトップ用テーブル構造を検出しました。")
+        for table in tables:
+            if "サンライズ" not in table.get_text():
+                continue
+            facility_headers = []
+            for tr in table.find_all("tr"):
+                cells = tr.find_all(["th", "td"])
+                row_text = "".join([c.get_text() for c in cells])
+                if any(k in row_text for k in ["ノビノビ", "シングル", "ソロ", "ツイン", "デラックス", "ＤＸ"]) and not any(k in row_text for k in ["サンライズ"]):
+                    for c in cells:
+                        c_text = c.get_text().strip().replace("\n", "").replace(" ", "")
+                        if any(k in c_text for k in ["選択", "列車", "発着", "時間", "月日", "おとな", "設備"]):
+                            continue
+                        facility_headers.append(c_text)
+                    break
+            if not facility_headers:
+                continue
+            
+            col_map = {}
+            for idx, h_text in enumerate(facility_headers):
+                is_smoking = "喫煙" in h_text
+                facility_key = None
+                if "ノビノビ" in h_text:
+                    facility_key = "ノビノビ禁煙"
+                elif "シングルツイン" in h_text:
+                    facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
+                elif "デラックス" in h_text or "ＤＸ" in h_text:
+                    facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
+                elif "サンライズツイン" in h_text or "サツイン" in h_text:
+                    facility_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
+                elif "ソロ" in h_text:
+                    facility_key = "ソロ禁煙"
+                elif "シングル" in h_text:
+                    facility_key = "single喫煙" if is_smoking else "single禁煙"
+                if facility_key:
+                    col_map[idx] = facility_key
+                    
+            rows = table.find_all("tr")
+            for row in rows:
+                tds = row.find_all(["td", "th"])
+                if not tds:
+                    continue
+                train_cell_idx = -1
+                train_raw_name = ""
+                for idx, td in enumerate(tds):
+                    td_text = td.get_text().strip().replace("\n", "").replace(" ", "")
+                    if "サンライズ" in td_text:
+                        train_cell_idx = idx
+                        train_raw_name = td_text
+                        break
+                if train_cell_idx == -1:
+                    continue
+                right_tds = tds[train_cell_idx + 1:]
+                base_name = re.sub(r'（.+?）|\(.+?\)', '', train_raw_name).strip().replace("特急", "")
+                
+                if base_name not in trains_status:
+                    trains_status[base_name] = {
+                        "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
+                        "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
+                        "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
+                        "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
+                    }
+                for col_idx, facility_key in col_map.items():
+                    if col_idx < len(right_tds):
+                        text = right_tds[col_idx].get_text().strip()
+                        mark = "--"
+                        if "○" in text or "内車" in text: mark = "○"
+                        elif "△" in text: mark = "△"
+                        elif "◇" in text: mark = "◇"
+                        elif "×" in text: mark = "×"
+                        if mark != "--":
+                            trains_status[base_name][facility_key] = mark
 
 def main():
     if not is_within_active_hours():
@@ -175,7 +221,6 @@ def main():
     config = get_target_config()
     print(f"🎯 ステルス直行巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
-    # 🔗 e5489直行ワープURLの自動組み立て
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
 
@@ -233,11 +278,11 @@ def main():
 
                 print(f"🔄 チェック {attempt + 1} 回目 実行中...")
                 
-                # 1️⃣ まずトップメニューにアクセスし、セッション（クッキー）を確立する！
+                # 1️⃣ セッションを確立
                 page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
                 page.wait_for_load_state("networkidle")
 
-                # 2️⃣ そのセッションを保持した状態で、直行ワープURLへアクセス！
+                # 2️⃣ 直接結果画面へワープ！
                 page.goto(direct_url)
                 page.wait_for_load_state("networkidle")
 
@@ -246,45 +291,19 @@ def main():
                     continue
 
                 try:
-                    # 「この列車を変更」が出現するまで最大15秒待機
-                    page.wait_for_selector("text=この列車を変更", timeout=15000)
+                    # 🎯 列車の一覧（カードリストまたはテーブル）が出現するまで最大20秒待機
+                    page.wait_for_selector(".changing-train-list, table, text=特急サンライズ", timeout=20000)
                 except Exception as e:
-                    print("⚠️ 'この列車を変更' ボタンが見つかりませんでした。画面遷移に失敗した可能性があります。")
+                    print("⚠️ 列車一覧画面のロードに失敗したか、タイムアウトしました。")
+                    print(f"   現在の表示URL: {page.url}")
+                    print(f"   現在のページタイトル: {page.title()}")
                     continue
 
                 trains_status = {}
 
-                # 💡 【ダブルスキャン：第1波】ノビノビ・シングルツイン・DX等
-                print("📸 [スキャン①] 最初の画面を解析中...")
+                # 📸 直接画面を解析！
+                print("📸 画面をスキャンして空席データを解析中...")
                 scrape_train_status(page.content(), trains_status)
-
-                change_buttons = page.locator("text=この列車を変更")
-                if change_buttons.count() == 0:
-                    print("📭 サンライズ号が見つかりません。")
-                    continue
-
-                # 「この列車を変更」をクリック
-                change_buttons.first.click()
-                
-                # 💡 【ダブルスキャン：第2波】ソロ・シングル・サンライズツイン等
-                has_after_button = False
-                try:
-                    page.wait_for_selector("text=後の列車", timeout=5000)
-                    print("👉 '後の列車' ボタンを発見。画面2へ進みます...")
-                    page.click("text=後の列車")
-                    has_after_button = True
-                except Exception as e:
-                    print("ℹ️ '後の列車' ボタンはありません。最初の画面のみでチェックを続行します。")
-
-                if has_after_button:
-                    try:
-                        # 確実にページが切り替わるのを3秒だけ待機
-                        page.wait_for_load_state("networkidle")
-                        page.wait_for_timeout(3000)
-                        print("📸 [スキャン②] 2番目の画面を解析中...")
-                        scrape_train_status(page.content(), trains_status)
-                    except Exception as e:
-                        print("⚠️ 2番目の設備画面のロードに失敗しました。")
 
                 any_vacant = False
                 status_text = ""

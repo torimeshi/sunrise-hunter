@@ -4,6 +4,7 @@ import csv
 import re
 import requests
 import traceback
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -79,7 +80,50 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 ステルス巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 ステルス直行巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+
+    # 🔗 e5489直行ワープURLの自動組み立て
+    dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
+    arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
+
+    encoded_dep = urllib.parse.quote(dep_st.encode("cp932"))
+    encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
+
+    # サンライズ瀬戸・出雲の判定
+    is_seto = "高松" in dep_st or "高松" in arr_st
+    facility_id = "%BB%BE%C4%20%20000" if is_seto else "%BB%B2%BD%D3%20%20000"
+
+    target_date = f"{config['year']}{int(config['month']):02d}{int(config['day']):02d}"
+
+    if config["dep"] == "三ノ宮":
+        hour, minute = "23", "50"
+    else:
+        hour, minute = "18", "00"
+
+    # パラメータ組み立て
+    param = (
+        f"inputDepartStName={encoded_dep}"
+        f"&inputArriveStName={encoded_arr}"
+        f"&inputType=0"
+        f"&inputDate={target_date}"
+        f"&inputHour={hour}"
+        f"&inputMinute={minute}"
+        f"&inputUniqueDepartSt=1"
+        f"&inputUniqueArriveSt=1"
+        f"&inputSearchType=1"
+        f"&inputTransferDepartStName1={encoded_dep}"
+        f"&inputTransferArriveStName1={encoded_arr}"
+        f"&inputTransferDepartStUnique1=1"
+        f"&inputTransferArriveStUnique1=1"
+        f"&inputTransferTrainType1=0001"
+        f"&inputSpecificTrainType1=2"
+        f"&inputSpecificBriefTrainKana1={facility_id}"
+        f"&SequenceType=0"
+        f"&inputReturnUrl=goyoyaku/campaign/sunriseseto_izumo/form.html"
+        f"&RTURL=https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
+    )
+
+    direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -87,7 +131,6 @@ def main():
         page = context.new_page()
 
         try:
-            # 💡 1回のアクション内で、30秒待機を挟んで3回チェックを繰り返す
             for attempt in range(3):
                 if not is_within_active_hours():
                     print("⏰ ループ中に稼働時間を過ぎたため、終了します。")
@@ -99,47 +142,28 @@ def main():
 
                 print(f"🔄 チェック {attempt + 1} 回目 実行中...")
                 
-                page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC")
-                page.click("text=新規予約")
+                # 🚀 直接検索結果画面へワープ！
+                page.goto(direct_url)
                 page.wait_for_load_state("networkidle")
 
                 if is_e5489_error(page.content()):
                     print("⚠️ エラーまたは混雑を検知。次へ進みます。")
                     continue
 
-                page.click("text=駅名を入力")
-                page.fill("input[id='txtStnNameFrom']", config["dep"])
-                page.fill("input[id='txtStnNameTo']", config["arr"])
-                page.select_option("select[name='selMonth']", config["month"])
-                page.select_option("select[name='selDay']", config["day"])
-
-                # 出発時間の自動セット
-                if config["dep"] == "三ノ宮":
-                    page.select_option("select[name='selHour']", "23")
-                    page.select_option("select[name='selMinute']", "50")
-                else:
-                    page.select_option("select[name='selHour']", "18")
-                    page.select_option("select[name='selMinute']", "00")
-
-                page.uncheck("input[id='chkShinkansen']")
-                page.check("input[id='chkLimitedExpress']")
-                page.click("text=検索する（新規予約）")
-                page.wait_for_load_state("networkidle")
-
-                if is_e5489_error(page.content()):
-                    print("⚠️ 検索エラーまたは混雑を検知。次へ進みます。")
-                    continue
-
+                # 「この列車を変更」を待機
+                page.wait_for_selector("text=この列車を変更", timeout=15000)
                 change_buttons = page.locator("text=この列車を変更")
+                
                 if change_buttons.count() == 0:
                     print("📭 サンライズ号が見つかりません。")
                     continue
 
+                # 「この列車を変更」をクリックして設備テーブルをロード
                 change_buttons.first.click()
-                page.wait_for_selector("text=後の列車", timeout=5000)
-                page.click("text=後の列車")
+                page.wait_for_selector("text=現在選択している列車", timeout=15000)
                 page.wait_for_load_state("networkidle")
 
+                # HTML解析
                 html = page.content()
                 soup = BeautifulSoup(html, "html.parser")
                 rows = soup.find_all("tr")

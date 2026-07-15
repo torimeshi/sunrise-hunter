@@ -2,6 +2,7 @@ import os
 import sys
 import csv
 import re
+import time
 import requests
 import traceback
 import urllib.parse
@@ -142,7 +143,7 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 独立クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 独立巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -200,7 +201,9 @@ def main():
                     return
 
                 if attempt > 0:
-                    page.wait_for_timeout(retry_delay_ms)
+                    # 💡 【修正点】破棄されたページではなく、システム全体を安全にスリープさせます
+                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にクリーンリロードします...")
+                    time.sleep(retry_delay_ms / 1000)
 
                 print(f"🔄 【完全独立ウィンドウ】アタック {attempt + 1} / {max_attempts} 回目 発射...")
                 

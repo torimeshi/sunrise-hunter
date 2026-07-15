@@ -54,12 +54,21 @@ def is_within_active_hours():
     
     return start_time <= now_jst <= end_time
 
-def is_e5489_error(page_content):
-    error_keywords = [
-        "20100801", "99990110", "00604087", 
-        "処理中にエラーが発生しました", "混雑中ですが", "ご案内"
-    ]
-    return any(k in page_content for k in error_keywords)
+def is_e5489_error(page):
+    """🚨 正常画面の見出しと、エラー画面の見出しを厳密に仕分ける高精度センサー"""
+    try:
+        title = page.title()
+        content = page.content()
+        # 画面タイトルが「ご案内」で、かつ「列車の変更」という正規タイトルが入っていない場合のみエラーとみなす
+        if "ご案内" in title and "列車の変更" not in title:
+            return True
+        error_keywords = [
+            "20100801", "99990110", "00604087", 
+            "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
+        ]
+        return any(k in content for k in error_keywords)
+    except:
+        return True
 
 def parse_mark_str(text):
     """セルの文字から空席マークを抽出する"""
@@ -143,7 +152,7 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 独立巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 独立クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -213,8 +222,7 @@ def main():
                     page.goto(direct_url, referer=referer_url)
                     page.wait_for_load_state("networkidle")
 
-                    current_html = page.content()
-                    if is_e5489_error(current_html):
+                    if is_e5489_error(page):
                         print("    ⚠️ 混雑画面（ご案内）を検知。この使い捨てブラウザを即座に破棄します。")
                         continue
 
@@ -248,10 +256,10 @@ def main():
                         
                         is_loaded_correctly = False
                         for check_sec in range(6):
-                            current_html = page.content()
-                            if is_e5489_error(current_html):
+                            if is_e5489_error(page):
                                 print("    ⚠️ 画面2への遷移中に混雑を検知しました。")
                                 break
+                            current_html = page.content()
                             if any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
                                 print(f"    ✅ 画面2の完全同期を確認（{check_sec}秒待機）。")
                                 is_loaded_correctly = True
@@ -288,8 +296,8 @@ def main():
                         "ソロ禁煙" if key == "ソロ禁煙" else (
                             "シングル禁煙" if key == "single禁煙" else (
                                 "シングル喫煙" if key == "single喫煙" else (
-                                    "シングルツイン禁煙" if key == "シングルツイン禁煙" else (
-                                        "シングルツイン喫煙" if key == "シングルツイン喫煙" else (
+                                    "シングルツイン禁煙" if key == "singleツイン禁煙" else (
+                                        "シングルツイン喫煙" if key == "singleツイン喫煙" else (
                                             "シングルデラックス禁煙" if key == "シングルデラックス禁煙" else (
                                                 "シングルデラックス喫煙" if key == "シングルデラックス喫煙" else (
                                                     "サンライズツイン禁煙" if key == "サンライズツイン禁煙" else "サンライズツイン喫煙"

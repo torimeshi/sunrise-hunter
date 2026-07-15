@@ -77,95 +77,95 @@ def parse_mark(td):
 def scrape_train_status(page_content, trains_status):
     """🛡️ テーブル構造を動的に解析して安全にすべての設備マークを取得するスキャンエンジン"""
     soup = BeautifulSoup(page_content, "html.parser")
-    rows = soup.find_all("tr")
-
-    for row in rows:
-        row_text = row.get_text().strip()
-        if "サンライズ" not in row_text:
+    tables = soup.find_all("table")
+    
+    for table in tables:
+        if "サンライズ" not in table.get_text():
             continue
-
-        tds_elements = row.find_all(["td", "th"])
-        tds_text = [td.get_text().strip().replace("\n", "").replace(" ", "") for td in tds_elements]
-        
-        # 1. 「サンライズ」が含まれる列を特定する
-        train_cell_val = ""
-        sunrise_cell_idx = -1
-        for idx, td_val in enumerate(tds_text):
-            if "サンライズ" in td_val:
-                train_cell_val = td_val
-                sunrise_cell_idx = idx
+            
+        # 1. 設備の列ヘッダー（TH）を動的に探す
+        facility_headers = []
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["th", "td"])
+            row_text = "".join([c.get_text() for c in cells])
+            # ノビノビ・シングル等のいずれかを含み、かつ「サンライズ」という文字を含まない行＝ヘッダー行
+            if any(k in row_text for k in ["ノビノビ", "シングル", "ソロ", "ツイン", "デラックス", "ＤＸ"]) and not any(k in row_text for k in ["サンライズ"]):
+                for c in cells:
+                    c_text = c.get_text().strip().replace("\n", "").replace(" ", "")
+                    # 余分な列をスキップ
+                    if any(k in c_text for k in ["選択", "列車", "発着", "時間", "月日", "おとな", "設備"]):
+                        continue
+                    facility_headers.append(c_text)
                 break
-        
-        if not train_cell_val or sunrise_cell_idx == -1:
+                
+        if not facility_headers:
             continue
             
-        right_tds = tds_elements[sunrise_cell_idx + 1:]
+        print(f"📊 解析されたヘッダー列: {facility_headers}")
         
-        # 列車名の正規化（「特急」や括弧を消して「サンライズ瀬戸」等にする）
-        base_name = re.sub(r'（.+?）|\(.+?\)', '', train_cell_val).strip()
-        base_name = base_name.replace("特急", "").strip()
-
-        if base_name not in trains_status:
-            trains_status[base_name] = {
-                "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
-                "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
-                "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
-                "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
-            }
-
-        # 2. 検索結果1ページ目か、設備変更画面（2ページ目）かを判定
-        is_page_2 = any(k in train_cell_val for k in ["ソロ", "シングル", "ツイン", "サツイン", "デラックス", "ＤＸ"])
-
-        if is_page_2:
-            # --- 設備変更画面（ソロ・シングル・サンライズツイン）の解析 ---
-            mark = "--"
-            # 行内から空席マークを探す
-            for td in right_tds:
-                td_text = td.get_text().strip()
-                if "○" in td_text or "内車" in td_text:
-                    mark = "○"
-                    break
-                elif "△" in td_text:
-                    mark = "△"
-                    break
-                elif "◇" in td_text:
-                    mark = "◇"
-                    break
-                elif "×" in td_text:
-                    mark = "×"
+        # 2. 列のインデックスと内部キーのマッピングを作成
+        col_map = {}
+        for idx, h_text in enumerate(facility_headers):
+            is_smoking = "喫煙" in h_text
+            facility_key = None
+            
+            if "ノビノビ" in h_text:
+                facility_key = "ノビノビ禁煙"
+            elif "シングルツイン" in h_text:
+                facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
+            elif "デラックス" in h_text or "ＤＸ" in h_text:
+                facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
+            elif "サンライズツイン" in h_text or "サツイン" in h_text:
+                facility_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
+            elif "ソロ" in h_text:
+                facility_key = "ソロ禁煙"
+            elif "シングル" in h_text:
+                facility_key = "single喫煙" if is_smoking else "single禁煙"
+            
+            if facility_key:
+                col_map[idx] = facility_key
+                
+        print(f"⚙️ 生成されたマッピング: {col_map}")
+        
+        # 3. データの読み取りとマージ
+        rows = table.find_all("tr")
+        for row in rows:
+            tds = row.find_all(["td", "th"])
+            if not tds:
+                continue
+            
+            # 「サンライズ」が含まれるセルを特定
+            train_cell_idx = -1
+            train_raw_name = ""
+            for idx, td in enumerate(tds):
+                td_text = td.get_text().strip().replace("\n", "").replace(" ", "")
+                if "サンライズ" in td_text:
+                    train_cell_idx = idx
+                    train_raw_name = td_text
                     break
             
-            if mark == "--":
+            if train_cell_idx == -1:
                 continue
-
-            is_smoking = "喫煙" in row_text
-
-            # 設備ごとのキー決定（部分一致の長い順に判定）
-            target_key = None
-            if "ソロ" in train_cell_val:
-                target_key = "ソロ禁煙"
-            elif "シングルツイン" in train_cell_val:
-                target_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
-            elif "デラックス" in train_cell_val or "ＤＸ" in train_cell_val:
-                target_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
-            elif "サンライズツイン" in train_cell_val or "サツイン" in train_cell_val:
-                target_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
-            elif "シングル" in train_cell_val:
-                target_key = "single喫煙" if is_smoking else "single禁煙"
-
-            if target_key:
-                trains_status[base_name][target_key] = mark
-
-        else:
-            # --- 最初の検索結果画面（ノビノビ・シングルツイン・シングルデラックス）の解析 ---
-            if len(right_tds) >= 5:
-                trains_status[base_name]["シングルツイン禁煙"] = parse_mark(right_tds[1])
-                trains_status[base_name]["シングルツイン喫煙"] = parse_mark(right_tds[2])
-                trains_status[base_name]["シングルデラックス禁煙"] = parse_mark(right_tds[3])
-                trains_status[base_name]["シングルデラックス喫煙"] = parse_mark(right_tds[4])
-            elif len(right_tds) >= 3:
-                trains_status[base_name]["シングルツイン禁煙"] = parse_mark(right_tds[1])
-                trains_status[base_name]["シングルツイン喫煙"] = parse_mark(right_tds[2])
+                
+            # 列車名より右側にある、空席記号のセルを抽出
+            right_tds = tds[train_cell_idx + 1:]
+            base_name = re.sub(r'（.+?）|\(.+?\)', '', train_raw_name).strip()
+            base_name = base_name.replace("特急", "").strip()
+            
+            if base_name not in trains_status:
+                trains_status[base_name] = {
+                    "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
+                    "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
+                    "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
+                    "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
+                }
+                
+            for col_idx, facility_key in col_map.items():
+                if col_idx < len(right_tds):
+                    mark = parse_mark(right_tds[col_idx])
+                    # すでに他のスキャンで有効なマークが入っている場合は上書きしない
+                    if mark != "--":
+                        trains_status[base_name][facility_key] = mark
 
 def main():
     if not is_within_active_hours():
@@ -182,7 +182,6 @@ def main():
     encoded_dep = urllib.parse.quote(dep_st.encode("cp932"))
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
 
-    # サンライズ瀬戸・出雲の判定
     is_seto = "高松" in dep_st or "高松" in arr_st
     facility_id = "%BB%BE%C4%20%20000" if is_seto else "%BB%B2%BD%D3%20%20000"
 
@@ -193,7 +192,6 @@ def main():
     else:
         hour, minute = "18", "00"
 
-    # パラメータ組み立て
     param = (
         f"inputDepartStName={encoded_dep}"
         f"&inputArriveStName={encoded_arr}"
@@ -256,9 +254,8 @@ def main():
 
                 trains_status = {}
 
-                # 💡 【ダブルスキャン：第1波】
-                # 「この列車を変更」をクリックする前に、最初の画面（シングルツイン・デラックス等）を解析！
-                print("📸 [スキャン①] 最初の画面（シングルツイン・シングルデラックス等）を解析中...")
+                # 💡 【ダブルスキャン：第1波】ノビノビ・シングルツイン・DX等
+                print("📸 [スキャン①] 最初の画面を解析中...")
                 scrape_train_status(page.content(), trains_status)
 
                 change_buttons = page.locator("text=この列車を変更")
@@ -269,24 +266,22 @@ def main():
                 # 「この列車を変更」をクリック
                 change_buttons.first.click()
                 
-                # 💡 【ダブルスキャン：第2波】
-                # 「後の列車」ボタンがあれば、それをクリックして2番目の設備画面へ進む
+                # 💡 【ダブルスキャン：第2波】ソロ・シングル・サンライズツイン等
                 has_after_button = False
                 try:
                     page.wait_for_selector("text=後の列車", timeout=5000)
-                    print("👉 '後の列車' ボタンを発見。画面2（ソロ・シングル等）へ進みます...")
+                    print("👉 '後の列車' ボタンを発見。画面2へ進みます...")
                     page.click("text=後の列車")
-                    page.wait_for_load_state("networkidle")
                     has_after_button = True
                 except Exception as e:
                     print("ℹ️ '後の列車' ボタンはありません。最初の画面のみでチェックを続行します。")
 
-                # 後の列車をクリックした場合、その画面（Page 2）もスキャンしてデータをマージ
                 if has_after_button:
                     try:
-                        page.wait_for_selector("text=現在選択している列車", timeout=10000)
+                        # 確実にページが切り替わるのを3秒だけ待機
                         page.wait_for_load_state("networkidle")
-                        print("📸 [スキャン②] 2番目の画面（ソロ・シングル・サンライズツイン等）を解析中...")
+                        page.wait_for_timeout(3000)
+                        print("📸 [スキャン②] 2番目の画面を解析中...")
                         scrape_train_status(page.content(), trains_status)
                     except Exception as e:
                         print("⚠️ 2番目の設備画面のロードに失敗しました。")
@@ -297,27 +292,31 @@ def main():
                 for t_name, rooms in trains_status.items():
                     status_text += f"◆ {t_name}\n-------------------------------\n"
                     order = [
-                        "ソロ禁煙", "single禁煙", "single喫煙", 
+                        "ノビノビ禁煙", "ソロ禁煙", "single禁煙", "single喫煙", 
                         "シングルツイン禁煙", "シングルツイン喫煙", 
-                        "singleデラックス禁煙" if "singleデラックス禁煙" in rooms else "シングルデラックス禁煙",
-                        "singleデラックス喫煙" if "singleデラックス喫煙" in rooms else "シングルデラックス喫煙", 
+                        "シングルデラックス禁煙", "シングルデラックス喫煙", 
                         "サンライズツイン禁煙", "サンライズツイン喫煙"
                     ]
                     for key in order:
-                        # 表示キーの統一化
-                        disp_key = "シングル禁煙" if key == "single禁煙" else (
-                            "シングル喫煙" if key == "single喫煙" else (
-                                "シングルデラックス禁煙" if key in ["singleデラックス禁煙", "シングルデラックス禁煙"] else (
-                                    "シングルデラックス喫煙" if key in ["singleデラックス喫煙", "シングルデラックス喫煙"] else key
+                        disp_key = "ノビノビ禁煙" if key == "ノビノビ禁煙" else (
+                            "ソロ禁煙" if key == "ソロ禁煙" else (
+                                "シングル禁煙" if key == "single禁煙" else (
+                                    "シングル喫煙" if key == "single喫煙" else (
+                                        "シングルツイン禁煙" if key == "シングルツイン禁煙" else (
+                                            "シングルツイン喫煙" if key == "シングルツイン喫煙" else (
+                                                "シングルデラックス禁煙" if key == "シングルデラックス禁煙" else (
+                                                    "シングルデラックス喫煙" if key == "シングルデラックス喫煙" else (
+                                                        "サンライズツイン禁煙" if key == "サンライズツイン禁煙" else "サンライズツイン喫煙"
+                                                    )
+                                                )
+                                            )
+                                        )
+                                    )
                                 )
                             )
                         )
                         
-                        lookup_key = "singleデラックス禁煙" if key == "シングルデラックス禁煙" and "singleデラックス禁煙" in rooms else (
-                            "singleデラックス喫煙" if key == "シングルデラックス喫煙" and "singleデラックス喫煙" in rooms else key
-                        )
-                        
-                        mark = rooms.get(lookup_key, "--")
+                        mark = rooms.get(key, "--")
                         
                         alert = ""
                         if mark in ["○", "△"]:

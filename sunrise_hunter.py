@@ -81,16 +81,18 @@ def is_within_active_hours():
     return start_time <= now_jst <= end_time
 
 def is_e5489_error(page_title, page_url, html_content):
-    """🚨 タイトル・URL・コンテンツの3重エラー検知フィルター"""
-    if "ご案内" in page_title and not any(k in page_title for k in ["経路・設備選択", "列車の変更"]):
+    try:
+        if "ご案内" in page_title and not any(k in page_title for k in ["経路・設備選択", "列車の変更"]):
+            return True
+        if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
+            return True
+        error_keywords = [
+            "20100801", "99990110", "00604087", 
+            "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
+        ]
+        return any(k in html_content for k in error_keywords)
+    except:
         return True
-    if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
-        return True
-    error_keywords = [
-        "20100801", "99990110", "00604087", 
-        "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
-    ]
-    return any(k in html_content for k in error_keywords)
 
 def parse_mark_str(text):
     if "○" in text or "内車" in text or "空席あり" in text or "vacant" in text:
@@ -250,25 +252,22 @@ def main():
                 page = context.new_page()
                 
                 try:
-                    # 🔑 正規のトップメニューを踏んでセッション（クッキー）を確実に確立
+                    # 🔑 初期セッションの確立
                     page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
                     
-                    # ワープURLへ突撃（ロード完了を待たずに最速で次の処理へ）
+                    # ワープURLへ突撃
                     page.goto(direct_url, referer=referer_url, timeout=15000)
                     
-                    # ⚡ アドバイス③：ロード直後のHTML情報を「1回だけ」取得
                     html_p1 = page.content()
                     title_p1 = page.title()
                     url_p1 = page.url
                     
-                    # 💡 【ちゃっぴー先生の黄金律】要素を待つ前に、まず混雑エラー画面かどうかを秒速判定！
                     if is_e5489_error(title_p1, url_p1, html_p1):
-                        print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。即座に窓を破棄します。")
-                        # 📸 デバッグ用にエラー画面の証拠写真を自動撮影
+                        print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。")
                         page.screenshot(path="debug.png", full_page=True)
                         continue
 
-                    # 正常画面であることが確定したので、自信を持って要素の出現を待つ！
+                    # 正常ルートのロードを待機
                     page.locator(".seat-status-table").wait_for(timeout=8000)
                     
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目の通常設備スキャン中...")
@@ -276,17 +275,14 @@ def main():
                     scrape_page1_table(soup_p1, status_obj)
                     success_scrape_at_least_once = True
 
-                    # 「この列車を変更」リンクを待ってクリック
                     popup_link = page.locator(".popup-link")
                     popup_link.wait_for(timeout=3000)
                     popup_link.first.click()
                     
-                    # 2ページ目へ進む「後の列車」ボタンの出現を待ってクリック
                     next_btn = page.locator(".change-next-train-button")
                     next_btn.wait_for(timeout=4000)
                     next_btn.click()
                     
-                    # 2ページ目のアコーディオンリストの出現を待つ
                     page.locator(".changing-train-list").wait_for(timeout=8000)
                     
                     html_p2 = page.content()
@@ -309,6 +305,7 @@ def main():
                     traceback.print_exc()
                     print("==================================================")
                     try:
+                        # 📸 タイムアウトで落ちた時も、その瞬間のフリーズ画面を確実にパシャリ
                         page.screenshot(path="debug.png", full_page=True)
                     except:
                         pass
@@ -319,7 +316,6 @@ def main():
                 print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれ、データに辿り着けませんでした。")
                 sys.exit(1)
 
-            # 空席判定
             any_vacant = False
             status_text = ""
 
@@ -336,7 +332,7 @@ def main():
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
-                    f"お目当てのキャンセルが放流されました！\n\n"
+                    f"お目当て of キャンセルが放流されました！\n\n"
                     f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"

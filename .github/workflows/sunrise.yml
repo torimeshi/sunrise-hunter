@@ -35,3 +35,11 @@ jobs:
         LINE_USER_ID: "Ub1d15b78b0898bc8423f8cebe68ad1fa"
         LINE_GROUP_ID: ""
       run: python sunrise_hunter.py
+
+    # 📸 ここに画像回収用のステップをドッキングしました！
+    - name: Upload Debug Screenshot
+      uses: actions/upload-artifact@v4
+      if: always() # 💡 途中でエラーが起きても「必ず」画像を回収する設定です
+      with:
+        name: e5489-debug-image
+        path: debug.png

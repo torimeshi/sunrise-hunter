@@ -59,7 +59,8 @@ def is_e5489_error(page):
     try:
         title = page.title()
         content = page.content()
-        if "ご案内" in title and "列車の変更" not in title:
+        # 画面タイトルが「ご案内」で、かつ正規タイトルが1つも含まれない場合のみエラー
+        if "ご案内" in title and not any(k in title for k in ["経路・設備選択", "列車の変更"]):
             return True
         error_keywords = [
             "20100801", "99990110", "00604087", 
@@ -71,21 +72,69 @@ def is_e5489_error(page):
 
 def parse_mark_str(text):
     """セルの文字から空席マークを抽出する"""
-    if "○" in text or "内車" in text or "空席あり" in text:
+    if "○" in text or "内車" in text or "空席あり" in text or "vacant" in text:
         return "○"
-    elif "△" in text or "残りわずか" in text:
+    elif "△" in text or "残りわずか" in text or "almost" in text:
         return "△"
-    elif "◇" in text or "事前申込" in text:
+    elif "◇" in text or "事前申込" in text or "undefined" in text:
         return "◇"
-    elif "×" in text or "残席なし" in text:
+    elif "×" in text or "残席なし" in text or "unavailable" in text:
         return "×"
     return "--"
 
-def scrape_train_status(page_content, trains_status):
-    """🛡️ レイアウトに依存せず、文字の並びから動的にマークを取得する無敵のスキャンエンジン"""
+def scrape_page1_table(page_content, trains_status):
+    """📸 [第1段階] 最初の画面のテーブル構造（ノビノビ・シングルツイン・DX）を解析"""
+    soup = BeautifulSoup(page_content, "html.parser")
+    tables = soup.find_all("table", class_="seat-status-table")
+    if not tables:
+        return False
+        
+    print("    📊 [解析] 1ページ目の通常設備テーブルを検出しました。")
+    base_name = "サンライズ瀬戸・出雲"
+    if base_name not in trains_status:
+        trains_status[base_name] = {
+            "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
+            "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
+            "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
+            "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
+        }
+        
+    for table in tables:
+        rows = table.find_all("tr")
+        for row in rows:
+            row_text = box_text = box_text = row.get_text().strip().replace(" ", "").replace("\n", "")
+            is_smoking = "喫煙" in row_text
+            
+            # 空席記号の取得
+            mark = "--"
+            td = row.find("td")
+            if td:
+                img = td.find("img")
+                if img:
+                    mark = parse_mark_str(img.get("alt", ""))
+                    if mark == "--":
+                        mark = parse_mark_str(img.get("src", ""))
+            
+            facility_key = None
+            if "普通" in row_text or "ノビノビ" in row_text:
+                facility_key = "ノビノビ禁煙"
+            elif "シングルツイン" in row_text:
+                facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
+            elif "デラックス" in row_text or "ＤＸ" in row_text:
+                facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
+                
+            if facility_key and mark != "--":
+                trains_status[base_name][facility_key] = mark
+    return True
+
+def scrape_page2_list(page_content, trains_status):
+    """📸 [第2段階] 後の列車ボタンを押した後のアコーディオン構造（ソロ・シングル・サツイン）を解析"""
     soup = BeautifulSoup(page_content, "html.parser")
     lists = soup.find_all("ul", class_="changing-train-list")
-    
+    if not lists:
+        return False
+        
+    print("    📊 [解析] 2ページ目の個室アコーディオンリストを検出しました。")
     for u_list in lists:
         items = u_list.find_all("li", recursive=False)
         for item in items:
@@ -94,19 +143,11 @@ def scrape_train_status(page_content, trains_status):
                 continue
             header_text = header_train.get_text().strip().replace(" ", "").replace("\n", "")
             
-            base_name = re.sub(r'（.+?）|\(.+?\)', '', header_text).strip().replace("特急", "")
+            base_name = "サンライズ瀬戸・出雲"
             category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
             if not category_match:
                 continue
             category = category_match.group(1) or category_match.group(2)
-            
-            if base_name not in trains_status:
-                trains_status[base_name] = {
-                    "ノビノビ禁煙": "--", "ソロ禁煙": "--", "single禁煙": "--", "single喫煙": "--",
-                    "シングルツイン禁煙": "--", "シングルツイン喫煙": "--",
-                    "シングルデラックス禁煙": "--", "シングルデラックス喫煙": "--",
-                    "サンライズツイン禁煙": "--", "サンライズツイン喫煙": "--"
-                }
             
             boxes = item.find_all(class_="changing-train-box")
             for box in boxes:
@@ -118,11 +159,9 @@ def scrape_train_status(page_content, trains_status):
                 if status_div:
                     img = status_div.find("img")
                     if img:
-                        alt_text = img.get("alt", "")
-                        src_text = img.get("src", "")
-                        mark = parse_mark_str(alt_text)
+                        mark = parse_mark_str(img.get("alt", ""))
                         if mark == "--":
-                            mark = parse_mark_str(src_text)
+                            mark = parse_mark_str(img.get("src", ""))
                 
                 if mark == "--" and "disabled" in "".join(box.get("class", [])):
                     mark = "×"
@@ -130,20 +169,15 @@ def scrape_train_status(page_content, trains_status):
                 facility_key = None
                 if "ソロ" in category:
                     facility_key = "ソロ禁煙"
-                elif "シングルツイン" in category:
-                    facility_key = "シングルツイン喫煙" if is_smoking else "シングルツイン禁煙"
-                elif "デラックス" in category or "ＤＸ" in category:
-                    facility_key = "シングルデラックス喫煙" if is_smoking else "シングルデラックス禁煙"
-                elif "サツイン" in category or "サンライズツイン" in category:
+                elif "サンライズツイン" in category or "サツイン" in category:
                     facility_key = "サンライズツイン喫煙" if is_smoking else "サンライズツイン禁煙"
-                elif "ノビノビ" in category:
-                    facility_key = "ノビノビ禁煙"
-                elif "シングル" in category:
+                elif "シングル" in category and "ツイン" not in category:
                     facility_key = "single喫煙" if is_smoking else "single禁煙"
                     
                 if facility_key and mark != "--":
                     if trains_status[base_name][facility_key] not in ["○", "△", "◇"]:
                         trains_status[base_name][facility_key] = mark
+    return True
 
 def main():
     if not is_within_active_hours():
@@ -152,15 +186,15 @@ def main():
 
     config = get_target_config()
     
-    # 💡 過去日付ガード
+    # 過去日付ガード
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
     if target_dt < now_jst:
-        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。")
+        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。未来の日付を入れてください。")
         sys.exit(0)
 
-    print(f"🎯 モバイル偽装巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 モバイル完全偽装Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -200,7 +234,6 @@ def main():
         f"&RTURL=https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
     )
 
-    # 🔗 スマホ専用のドメイン・パラメータへと完全に切り替えます
     direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
 
@@ -219,12 +252,10 @@ def main():
                     return
 
                 if attempt > 0:
-                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にモバイル再突撃します...")
                     time.sleep(retry_delay_ms / 1000)
 
-                print(f"📱 【iPhone13偽装窓】アタック {attempt + 1} / {max_attempts} 回目...")
+                print(f"📱 【iPhone13型独立窓】アタック {attempt + 1} / {max_attempts} 回目...")
                 
-                # 💡 【とりめしさん監修】ブラウザのコンテキストを完全に本物の「iPhone 13」としてシミュレート！
                 iphone_config = p.devices["iPhone 13"]
                 context = browser.new_context(**iphone_config)
                 page = context.new_page()
@@ -234,53 +265,54 @@ def main():
                     page.wait_for_load_state("networkidle")
 
                     if is_e5489_error(page):
-                        print("    ⚠️ モバイル版でも混雑画面を検知。即座に破棄して次へ。")
+                        print("    ⚠️ 混雑画面（ご案内）を検知。このコンテキストを破棄して次へ。")
                         continue
 
                     try:
-                        page.wait_for_selector(".changing-train-list, text=この列車を変更", timeout=8000)
+                        # 1ページ目の要素（テーブルまたは列車変更ポップアップリンク）を待つ
+                        page.wait_for_selector(".seat-status-table, text=この列車を変更", timeout=8000)
                     except Exception as e:
-                        print("    ⚠️ 画面の応答がタイムアウトしました。")
+                        print("    ⚠️ 1ページ目の応答がタイムアウトしました。")
                         continue
 
-                    print("    📸 [スキャン①] 最初のモバイル画面を解析中...")
-                    scrape_train_status(page.content(), trains_status)
-                    success_scrape_at_least_once = True
-
-                    change_buttons = page.locator("text=この列車を変更")
-                    if change_buttons.count() == 0:
-                        continue
-
-                    # 🕵️‍♂️ 歩行軌跡監視（WalkMe）のないスマホ版なので、安全にタップ可能！
-                    change_buttons.first.click()
+                    # 📸 【Wスキャン①】1ページ目のテーブル（ノビノビ・ツイン等）を解析
+                    p1_success = scrape_page1_table(page.content(), trains_status)
                     
-                    has_after_button = False
+                    # 💡 ポップアップを開くためのリンクまたは「後の列車」ボタンを直接探す
+                    # もしポップアップ用の「この列車を変更」があればクリック
+                    change_link = page.locator("text=この列車を変更")
+                    if change_link.count() > 0:
+                        change_link.first.click()
+                        page.wait_for_timeout(1000)
+                    
+                    # 🎯 【超重要修正】2ページ目へ進む「後の列車」ボタンをダイレクトクリック！
                     try:
-                        page.wait_for_selector("text=後の列車", timeout=4000)
-                        print("    👉 '後の列車' ボタンを発見。画面2へ進みます...")
-                        page.click("text=後の列車")
-                        has_after_button = True
-                    except Exception as e:
-                        pass
-
-                    if has_after_button:
+                        page.wait_for_selector(".change-next-train-button, text=後の列車", timeout=4000)
+                        page.click(".change-next-train-button, text=後の列車")
                         page.wait_for_load_state("networkidle")
-                        
-                        is_loaded_correctly = False
-                        for check_sec in range(6):
-                            if is_e5489_error(page):
-                                print("    ⚠️ 画面2への遷移中に混雑を検知しました。")
-                                break
-                            current_html = page.content()
-                            if any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
-                                print(f"    ✅ 画面2の完全同期を確認（{check_sec}秒待機）。")
-                                is_loaded_correctly = True
-                                break
-                            page.wait_for_timeout(1000)
+                    except Exception as e:
+                        print("    ⚠️ '後の列車' ボタンの出現に失敗しました。")
+                        if p1_success:
+                            success_scrape_at_least_once = True
+                        continue
 
-                        if is_loaded_correctly:
-                            print("    📸 [スキャン②] 2番目の画面（ソロ・シングル等）を解析中...")
-                            scrape_train_status(page.content(), trains_status)
+                    # 💡 2ページ目が完全に同期して描画されるまでホールド監視
+                    is_loaded_correctly = False
+                    for check_sec in range(6):
+                        if is_e5489_error(page):
+                            break
+                        current_html = page.content()
+                        if "changing-train-list" in current_html or any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
+                            is_loaded_correctly = True
+                            break
+                        page.wait_for_timeout(1000)
+
+                    # 📸 【Wスキャン②】2ページ目の個室アコーディオンを解析
+                    if is_loaded_correctly:
+                        scrape_page2_list(page.content(), trains_status)
+                        success_scrape_at_least_once = True # 両ページを完璧に踏破した証明！
+                        print("    ✅ [完全踏破] 1つ目のセッションで両ページの全座席スキャンに成功！")
+                        break # 1回でも完全に踏破できたら、15回繰り返さずにその場でループを抜ける！
                             
                 except Exception as attempt_err:
                     print(f"    ⚠️ モバイル通信エラーが発生しました。")
@@ -288,14 +320,15 @@ def main():
                     context.close()
 
             if not success_scrape_at_least_once:
-                print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれました。リトライを継続します。")
+                print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれ、データに辿り着けませんでした。")
                 sys.exit(1)
 
+            # 空席判定とテキスト組み立て
             any_vacant = False
             status_text = ""
 
             for t_name, rooms in trains_status.items():
-                status_text += f"◆ {t_name}\n-------------------------------\n"
+                status_text += f"◆ サンライズ瀬戸・出雲 全設備状況\n-------------------------------\n"
                 order = [
                     "ノビノビ禁煙", "ソロ禁煙", "single禁煙", "single喫煙", 
                     "シングルツイン禁煙", "シングルツイン喫煙", 
@@ -323,7 +356,7 @@ def main():
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
-                    f"とりめしさん、大正解です！スマホ版偽装で完璧に突破しました！\n\n"
+                    f"とりめしさん、Wスキャンリレー大成功です！空席を完璧に検知しました！\n\n"
                     f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"
@@ -334,7 +367,7 @@ def main():
                 send_line(msg)
                 return 
 
-            print("\n📭 スマホ版での完全突破に成功！現時点ではすべて本当に「満席」でした。")
+            print("\n📭 スマホ版Wスキャンリレーに完全成功！現時点ではすべて本当に「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")

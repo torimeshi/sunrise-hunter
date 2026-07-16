@@ -81,18 +81,16 @@ def is_within_active_hours():
     return start_time <= now_jst <= end_time
 
 def is_e5489_error(page_title, page_url, html_content):
-    try:
-        if "ご案内" in page_title and not any(k in page_title for k in ["経路・設備選択", "列車の変更"]):
-            return True
-        if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
-            return True
-        error_keywords = [
-            "20100801", "99990110", "00604087", 
-            "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
-        ]
-        return any(k in html_content for k in error_keywords)
-    except:
+    """🚨 タイトル・URL・コンテンツの3重エラー検知フィルター"""
+    if "ご案内" in page_title and not any(k in page_title for k in ["経路・設備選択", "列車の変更"]):
         return True
+    if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
+        return True
+    error_keywords = [
+        "20100801", "99990110", "00604087", 
+        "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
+    ]
+    return any(k in html_content for k in error_keywords)
 
 def parse_mark_str(text):
     if "○" in text or "内車" in text or "空席あり" in text or "vacant" in text:
@@ -111,6 +109,7 @@ def scrape_page1_table(soup, status: SunRiseStatus):
         return False
         
     print("    📊 [解析] 1ページ目の通常設備テーブルを検出しました。")
+    base_name = "サンライズ瀬戸・出雲"
     for table in tables:
         rows = table.find_all("tr")
         for row in rows:
@@ -150,6 +149,7 @@ def scrape_page2_list(soup, status: SunRiseStatus):
                 continue
             header_text = "".join(header_train.stripped_strings)
             
+            base_name = "サンライズ瀬戸・出雲"
             category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
             if not category_match:
                 continue
@@ -250,44 +250,49 @@ def main():
                 page = context.new_page()
                 
                 try:
-                    # 🎯 タイムアウトのみ指定。wait_untilのフライングを抑制
-                    page.goto(direct_url, referer=referer_url, timeout=20000)
+                    # 🔑 正規のトップメニューを踏んでセッション（クッキー）を確実に確立
+                    page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
                     
-                    # ⏳ 【修正点】HTMLやタイトルを引っこ抜く前に、まずテーブル要素の出現を「絶対待つ」
-                    print("    ⏳ [DEBUG] 1ページ目の通常設備テーブルを待機中...")
-                    page.locator(".seat-status-table").wait_for(timeout=10000)
+                    # ワープURLへ突撃（ロード完了を待たずに最速で次の処理へ）
+                    page.goto(direct_url, referer=referer_url, timeout=15000)
                     
-                    # 同期が完了したこの瞬間に初めて、各種情報を1回だけシリアライズ！
+                    # ⚡ アドバイス③：ロード直後のHTML情報を「1回だけ」取得
                     html_p1 = page.content()
                     title_p1 = page.title()
                     url_p1 = page.url
                     
+                    # 💡 【ちゃっぴー先生の黄金律】要素を待つ前に、まず混雑エラー画面かどうかを秒速判定！
                     if is_e5489_error(title_p1, url_p1, html_p1):
-                        print("    ⚠️ [STATE: BLOCKED] 1ページ目で混雑画面を検知。セッションを破棄します。")
+                        print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。即座に窓を破棄します。")
+                        # 📸 デバッグ用にエラー画面の証拠写真を自動撮影
+                        page.screenshot(path="debug.png", full_page=True)
                         continue
 
+                    # 正常画面であることが確定したので、自信を持って要素の出現を待つ！
+                    page.locator(".seat-status-table").wait_for(timeout=8000)
+                    
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目の通常設備スキャン中...")
                     soup_p1 = BeautifulSoup(html_p1, "html.parser")
                     scrape_page1_table(soup_p1, status_obj)
                     success_scrape_at_least_once = True
 
-                    # ポップアップ用の「この列車を変更」リンクを待ってクリック
+                    # 「この列車を変更」リンクを待ってクリック
                     popup_link = page.locator(".popup-link")
                     popup_link.wait_for(timeout=3000)
                     popup_link.first.click()
                     
-                    # 2ページ目へ進む「後の列車」ボタンの出現を完璧に待つ！
+                    # 2ページ目へ進む「後の列車」ボタンの出現を待ってクリック
                     next_btn = page.locator(".change-next-train-button")
                     next_btn.wait_for(timeout=4000)
                     next_btn.click()
                     
-                    # 2ページ目のアコーディオンリストが画面に出現するまで完全同期！
-                    print("    ⏳ [DEBUG] 2ページ目の個室リストの出現を待機中...")
-                    page.locator(".changing-train-list").wait_for(timeout=10000)
+                    # 2ページ目のアコーディオンリストの出現を待つ
+                    page.locator(".changing-train-list").wait_for(timeout=8000)
                     
                     html_p2 = page.content()
                     if is_e5489_error(page.title(), page.url(), html_p2):
-                        print("    ⚠️ [STATE: BLOCKED] 2ページ目への遷移中に混雑に阻まれました。")
+                        print("    ⚠️ [混雑・エラー検知] 2ページ目への遷移中に弾かれました。")
+                        page.screenshot(path="debug.png", full_page=True)
                         continue
 
                     print("    📸 [STATE: PAGE2_SCAN] 2ページ目の個室アコーディオンを解析中...")
@@ -297,13 +302,16 @@ def main():
                     break
                             
                 except Exception as attempt_err:
-                    # 💡 【大修正】握りつぶしていた例外とスタックトレースをすべて可視化！！
                     print("==================================================")
-                    print(f"❌ アタック {attempt + 1} 回目でエラーを検出しました。")
+                    print(f"❌ アタック {attempt + 1} 回目でエラーが発生しました。")
                     print(f"型: {type(attempt_err)}")
                     print(f"内容: {attempt_err}")
                     traceback.print_exc()
                     print("==================================================")
+                    try:
+                        page.screenshot(path="debug.png", full_page=True)
+                    except:
+                        pass
                 finally:
                     context.close()
 

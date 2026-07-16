@@ -20,7 +20,6 @@ LINE_GROUP = os.environ.get("LINE_GROUP_ID")
 
 @dataclass
 class SunRiseStatus:
-    """👑 データ構造を堅牢なDataclassへ刷新"""
     nobinobi: str = "--"
     solo: str = "--"
     single_kinyen: str = "--"
@@ -75,32 +74,27 @@ def get_target_config():
         sys.exit(0)
 
 def is_within_active_hours():
-    """⏰ 日本時間の 5:29〜23:51 の間だけ動く秒速判定センサー"""
-    jst = timezone(timedelta(hours=9)) # 日本時間 (UTC+9)
+    jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst).time()
-    
     start_time = datetime.strptime("05:29", "%H:%M").time()
     end_time = datetime.strptime("23:51", "%H:%M").time()
-    
     return start_time <= now_jst <= end_time
 
-def is_e5489_error(page):
-    """🚨 正常画面の見出しと、エラー画面の見出しを厳密に仕分ける高精度センサー"""
+def is_e5489_error(page_title, page_url, html_content):
     try:
-        title = page.title()
-        content = page.content()
-        if "ご案内" in title and not any(k in title for k in ["経路・設備選択", "列車の変更"]):
+        if "ご案内" in page_title and not any(k in page_title for k in ["経路・設備選択", "列車の変更"]):
+            return True
+        if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
             return True
         error_keywords = [
             "20100801", "99990110", "00604087", 
             "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"
         ]
-        return any(k in content for k in error_keywords)
+        return any(k in html_content for k in error_keywords)
     except:
         return True
 
 def parse_mark_str(text):
-    """セルの文字から空席マークを抽出する"""
     if "○" in text or "内車" in text or "空席あり" in text or "vacant" in text:
         return "○"
     elif "△" in text or "残りわずか" in text or "almost" in text:
@@ -112,14 +106,11 @@ def parse_mark_str(text):
     return "--"
 
 def scrape_page1_table(soup, status: SunRiseStatus):
-    """📸 [第1段階] 最初の画面のテーブル構造（ノビノビ・シングルツイン・DX）を解析"""
     tables = soup.find_all("table", class_="seat-status-table")
     if not tables:
         return False
         
     print("    📊 [解析] 1ページ目の通常設備テーブルを検出しました。")
-    base_name = "サンライズ瀬戸・出雲"
-    
     for table in tables:
         rows = table.find_all("tr")
         for row in rows:
@@ -146,7 +137,6 @@ def scrape_page1_table(soup, status: SunRiseStatus):
     return True
 
 def scrape_page2_list(soup, status: SunRiseStatus):
-    """📸 [第2段階] 後の列車ボタンを押した後のアコーディオン構造（ソロ・シングル・サツイン）を解析"""
     lists = soup.find_all("ul", class_="changing-train-list")
     if not lists:
         return False
@@ -160,7 +150,6 @@ def scrape_page2_list(soup, status: SunRiseStatus):
                 continue
             header_text = "".join(header_train.stripped_strings)
             
-            base_name = "サンライズ瀬戸・出雲"
             category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
             if not category_match:
                 continue
@@ -200,12 +189,12 @@ def main():
 
     config = get_target_config()
     
-    # 💡 過去日付ガード
+    # 過去日付ガード
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
     if target_dt < now_jst:
-        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。未来の日付を入れてください。")
+        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。")
         sys.exit(0)
 
     print(f"🎯 モバイル完全偽装Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
@@ -215,16 +204,10 @@ def main():
 
     encoded_dep = urllib.parse.quote(dep_st.encode("cp932"))
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
-
-    is_seto = "高松" in dep_st or "高松" in arr_st
-    facility_id = "%BB%BE%C4%20%20000" if is_seto else "%BB%B2%BD%D3%20%20000"
-
+    facility_id = "%BB%BE%C4%20%20000" if "高松" in dep_st or "高松" in arr_st else "%BB%B2%BD%D3%20%20000"
     target_date = f"{config['year']}{int(config['month']):02d}{int(config['day']):02d}"
 
-    if config["dep"] == "三ノ宮":
-        hour, minute = "23", "50"
-    else:
-        hour, minute = "18", "00"
+    hour, minute = ("23", "50") if config["dep"] == "三ノ宮" else ("18", "00")
 
     param = (
         f"inputDepartStName={encoded_dep}&inputArriveStName={encoded_arr}&inputType=0"
@@ -257,7 +240,6 @@ def main():
 
                 if attempt > 0:
                     sleep_time = backoff_base[attempt] + random.uniform(0.5, 2.0)
-                    # 💡 【修正点】:.2s ➡️ :.2f に修正して浮動小数点エラーを完全撃破！
                     print(f"⏳ サーバー混雑中... {sleep_time:.2f}秒後にモバイル再突撃します...")
                     time.sleep(sleep_time)
 
@@ -268,8 +250,14 @@ def main():
                 page = context.new_page()
                 
                 try:
-                    page.goto(direct_url, referer=referer_url, wait_until="domcontentloaded")
+                    # 🎯 タイムアウトのみ指定。wait_untilのフライングを抑制
+                    page.goto(direct_url, referer=referer_url, timeout=20000)
                     
+                    # ⏳ 【修正点】HTMLやタイトルを引っこ抜く前に、まずテーブル要素の出現を「絶対待つ」
+                    print("    ⏳ [DEBUG] 1ページ目の通常設備テーブルを待機中...")
+                    page.locator(".seat-status-table").wait_for(timeout=10000)
+                    
+                    # 同期が完了したこの瞬間に初めて、各種情報を1回だけシリアライズ！
                     html_p1 = page.content()
                     title_p1 = page.title()
                     url_p1 = page.url
@@ -278,46 +266,44 @@ def main():
                         print("    ⚠️ [STATE: BLOCKED] 1ページ目で混雑画面を検知。セッションを破棄します。")
                         continue
 
-                    page.locator(".seat-status-table, .popup-link").first.wait_for(timeout=8000)
-                    
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目の通常設備スキャン中...")
                     soup_p1 = BeautifulSoup(html_p1, "html.parser")
                     scrape_page1_table(soup_p1, status_obj)
                     success_scrape_at_least_once = True
 
-                    change_link = page.locator(".popup-link")
-                    if change_link.count() > 0:
-                        change_link.first.click()
-                        page.wait_for_timeout(1000)
+                    # ポップアップ用の「この列車を変更」リンクを待ってクリック
+                    popup_link = page.locator(".popup-link")
+                    popup_link.wait_for(timeout=3000)
+                    popup_link.first.click()
                     
-                    try:
-                        page.wait_for_selector(".change-next-train-button, text=後の列車", timeout=4000)
-                        page.click(".change-next-train-button, text=後の列車")
-                        page.wait_for_load_state("networkidle")
-                    except Exception as e:
-                        print("    ⚠️ '後の列車' ボタンの出現に失敗しました。")
+                    # 2ページ目へ進む「後の列車」ボタンの出現を完璧に待つ！
+                    next_btn = page.locator(".change-next-train-button")
+                    next_btn.wait_for(timeout=4000)
+                    next_btn.click()
+                    
+                    # 2ページ目のアコーディオンリストが画面に出現するまで完全同期！
+                    print("    ⏳ [DEBUG] 2ページ目の個室リストの出現を待機中...")
+                    page.locator(".changing-train-list").wait_for(timeout=10000)
+                    
+                    html_p2 = page.content()
+                    if is_e5489_error(page.title(), page.url(), html_p2):
+                        print("    ⚠️ [STATE: BLOCKED] 2ページ目への遷移中に混雑に阻まれました。")
                         continue
 
-                    is_loaded_correctly = False
-                    for check_sec in range(6):
-                        if is_e5489_error(page):
-                            break
-                        current_html = page.content()
-                        if "changing-train-list" in current_html or any(k in current_html for k in ["（ソロ）", "（シングル）", "（サツイン）"]):
-                            is_loaded_correctly = True
-                            break
-                        page.wait_for_timeout(1000)
-
-                    if is_loaded_correctly:
-                        html_p2 = page.content()
-                        print("    📸 [STATE: PAGE2_SCAN] 2ページ目の個室アコーディオンを解析中...")
-                        soup_p2 = BeautifulSoup(html_p2, "html.parser")
-                        scrape_page2_list(soup_p2, status_obj)
-                        print("    🎉 [STATE: SUCCESS] 全設備の完全踏破に成功しました！")
-                        break
+                    print("    📸 [STATE: PAGE2_SCAN] 2ページ目の個室アコーディオンを解析中...")
+                    soup_p2 = BeautifulSoup(html_p2, "html.parser")
+                    scrape_page2_list(soup_p2, status_obj)
+                    print("    🎉 [STATE: SUCCESS] 全設備の完全踏破に成功！")
+                    break
                             
                 except Exception as attempt_err:
-                    print(f"    ⚠️ モバイル通信エラーが発生しました。")
+                    # 💡 【大修正】握りつぶしていた例外とスタックトレースをすべて可視化！！
+                    print("==================================================")
+                    print(f"❌ アタック {attempt + 1} 回目でエラーを検出しました。")
+                    print(f"型: {type(attempt_err)}")
+                    print(f"内容: {attempt_err}")
+                    traceback.print_exc()
+                    print("==================================================")
                 finally:
                     context.close()
 
@@ -325,6 +311,7 @@ def main():
                 print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれ、データに辿り着けませんでした。")
                 sys.exit(1)
 
+            # 空席判定
             any_vacant = False
             status_text = ""
 

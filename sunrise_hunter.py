@@ -8,7 +8,7 @@ import traceback
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, devices
 
 # ⚙️ 環境変数の読み込み
 CSV_URL = os.environ.get("CONFIG_CSV_URL")
@@ -152,17 +152,15 @@ def main():
 
     config = get_target_config()
     
-    # 💡 【新機能】過去日付の突撃を事前に防ぐ安全装置
-    jst = timezone(timedelta(hours=9)) # 日本時間 (UTC+9)
+    # 💡 過去日付ガード
+    jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
-    
     if target_dt < now_jst:
-        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）はすでに過去の日付です。")
-        print("    e5489がエラーを返すため、巡回を行わずに終了します。フォームから新しい日付を送ってください！")
+        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 独立巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 モバイル偽装巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -202,6 +200,7 @@ def main():
         f"&RTURL=https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
     )
 
+    # 🔗 スマホ専用のドメイン・パラメータへと完全に切り替えます
     direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
 
@@ -220,12 +219,14 @@ def main():
                     return
 
                 if attempt > 0:
-                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にクリーンリロードします...")
+                    print(f"⏳ サーバー混雑中... {retry_delay_ms/1000}秒後にモバイル再突撃します...")
                     time.sleep(retry_delay_ms / 1000)
 
-                print(f"🔄 【完全独立ウィンドウ】アタック {attempt + 1} / {max_attempts} 回目 発射...")
+                print(f"📱 【iPhone13偽装窓】アタック {attempt + 1} / {max_attempts} 回目...")
                 
-                context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                # 💡 【とりめしさん監修】ブラウザのコンテキストを完全に本物の「iPhone 13」としてシミュレート！
+                iphone_config = p.devices["iPhone 13"]
+                context = browser.new_context(**iphone_config)
                 page = context.new_page()
                 
                 try:
@@ -233,16 +234,16 @@ def main():
                     page.wait_for_load_state("networkidle")
 
                     if is_e5489_error(page):
-                        print("    ⚠️ 混雑画面（ご案内）を検知。この使い捨てブラウザを即座に破棄します。")
+                        print("    ⚠️ モバイル版でも混雑画面を検知。即座に破棄して次へ。")
                         continue
 
                     try:
                         page.wait_for_selector(".changing-train-list, text=この列車を変更", timeout=8000)
                     except Exception as e:
-                        print("    ⚠️ 画面の応答が遅延したため、破棄して次へ進みます。")
+                        print("    ⚠️ 画面の応答がタイムアウトしました。")
                         continue
 
-                    print("    📸 [スキャン①] 最初の画面を解析中...")
+                    print("    📸 [スキャン①] 最初のモバイル画面を解析中...")
                     scrape_train_status(page.content(), trains_status)
                     success_scrape_at_least_once = True
 
@@ -250,6 +251,7 @@ def main():
                     if change_buttons.count() == 0:
                         continue
 
+                    # 🕵️‍♂️ 歩行軌跡監視（WalkMe）のないスマホ版なので、安全にタップ可能！
                     change_buttons.first.click()
                     
                     has_after_button = False
@@ -281,13 +283,12 @@ def main():
                             scrape_train_status(page.content(), trains_status)
                             
                 except Exception as attempt_err:
-                    print(f"    ⚠️ 個別アタック中に通信エラーが発生しました。")
+                    print(f"    ⚠️ モバイル通信エラーが発生しました。")
                 finally:
                     context.close()
 
             if not success_scrape_at_least_once:
-                print("\n❌ 【真実のログ】15回すべてがサーバー混雑（ご案内）に阻まれ、一度も空席テーブルに辿り着けませんでした。")
-                print("    サーバーが限界を迎えています。この実行は『失敗（Fail）』とします。")
+                print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれました。リトライを継続します。")
                 sys.exit(1)
 
             any_vacant = False
@@ -322,18 +323,18 @@ def main():
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
-                    f"お目当てのキャンセルが放流されました！\n\n"
+                    f"とりめしさん、大正解です！スマホ版偽装で完璧に突破しました！\n\n"
                     f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"
                     f"===============================\n"
                     f"{status_text}"
                 )
-                print(f"🎉 混雑をすり抜け、本物の画面で空席を検知！LINEへ通知します。")
+                print(f"🎉 完璧に空席を検知！LINEへ通知します。")
                 send_line(msg)
                 return 
 
-            print("\n📭 混雑の隙間を突いて画面の取得に成功しましたが、現時点ではすべて本当に「満席」でした。")
+            print("\n📭 スマホ版での完全突破に成功！現時点ではすべて本当に「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")

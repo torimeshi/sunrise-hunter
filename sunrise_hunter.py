@@ -59,7 +59,6 @@ def is_e5489_error(page):
     try:
         title = page.title()
         content = page.content()
-        # 画面タイトルが「ご案内」で、かつ「列車の変更」という正規タイトルが入っていない場合のみエラーとみなす
         if "ご案内" in title and "列車の変更" not in title:
             return True
         error_keywords = [
@@ -152,7 +151,18 @@ def main():
         return
 
     config = get_target_config()
-    print(f"🎯 独立クリーン巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    
+    # 💡 【新機能】過去日付の突撃を事前に防ぐ安全装置
+    jst = timezone(timedelta(hours=9)) # 日本時間 (UTC+9)
+    now_jst = datetime.now(jst)
+    target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
+    
+    if target_dt < now_jst:
+        print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）はすでに過去の日付です。")
+        print("    e5489がエラーを返すため、巡回を行わずに終了します。フォームから新しい日付を送ってください！")
+        sys.exit(0)
+
+    print(f"🎯 独立巡回開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -292,23 +302,9 @@ def main():
                     "サンライズツイン禁煙", "サンライズツイン喫煙"
                 ]
                 for key in order:
-                    disp_key = "ノビノビ禁煙" if key == "ノビノビ禁煙" else (
-                        "ソロ禁煙" if key == "ソロ禁煙" else (
-                            "シングル禁煙" if key == "single禁煙" else (
-                                "シングル喫煙" if key == "single喫煙" else (
-                                    "シングルツイン禁煙" if key == "singleツイン禁煙" else (
-                                        "シングルツイン喫煙" if key == "singleツイン喫煙" else (
-                                            "シングルデラックス禁煙" if key == "シングルデラックス禁煙" else (
-                                                "シングルデラックス喫煙" if key == "シングルデラックス喫煙" else (
-                                                    "サンライズツイン禁煙" if key == "サンライズツイン禁煙" else "サンライズツイン喫煙"
-                                                )
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                    )
+                    disp_key = key
+                    if key == "single禁煙": disp_key = "シングル禁煙"
+                    elif key == "single喫煙": disp_key = "シングル喫煙"
                     
                     mark = rooms.get(key, "--")
                     

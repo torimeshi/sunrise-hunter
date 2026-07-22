@@ -47,10 +47,18 @@ class SunRiseStatus:
 def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"}
+    
+    # デバッグ用に環境変数がセットされているかも表示
+    print(f"🔧 [LINE設定確認] TOKEN有無: {bool(LINE_TOKEN)}, USER_ID有無: {bool(LINE_USER)}, GROUP_ID有無: {bool(LINE_GROUP)}")
+
     for to_id in [LINE_USER, LINE_GROUP]:
         if to_id:
             payload = {"to": to_id, "messages": [{"type": "text", "text": message}]}
-            requests.post(url, headers=headers, json=payload, timeout=10)
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=10)
+                print(f"📢 LINE APIレスポンス (宛先: {to_id}): ステータス {res.status_code}, 内容: {res.text}")
+            except Exception as e:
+                print(f"❌ LINE送信例外 (宛先: {to_id}): {e}")
 
 def get_target_config():
     try:
@@ -91,7 +99,6 @@ def is_e5489_error(page_title, page_url, html_content):
         return True
 
 def parse_mark_from_td(td_element):
-    """ご提供いただいたHTML構造に基づき、imgのalt属性から正確に記号を判定する"""
     if not td_element: return "--"
     html_str = str(td_element)
     if "空席あり" in html_str: return "○"
@@ -105,7 +112,6 @@ def is_data_acquired(status: SunRiseStatus, target_keys: list):
     return any(current_data[k] != "--" for k in target_keys)
 
 def parse_table_data(soup, status: SunRiseStatus):
-    """💡 提供された生HTML構造を完全に反映したテーブル解析エンジン"""
     tables = soup.find_all("table", class_="train-info-table")
     for table in tables:
         for tr in table.find_all("tr"):
@@ -115,7 +121,6 @@ def parse_table_data(soup, status: SunRiseStatus):
             row_text = train_td.get_text(strip=True)
             tds = tr.find_all("td")
             
-            # 構造: [0]発着, [1]列車名, [2]ノビノビ, [3]B寝台禁煙, [4]B寝台喫煙, [5]A寝台禁煙, [6]A寝台喫煙
             if len(tds) >= 7:
                 nobi_mark = parse_mark_from_td(tds[2])
                 b_kinyen = parse_mark_from_td(tds[3])
@@ -161,7 +166,7 @@ def main():
         print(f"⚠️ 【自動停止】指定された乗車日は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 最終完全版(V9) Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 最終完全版(V10) Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -225,7 +230,6 @@ def main():
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目のデータを一瞬で回収...")
                     parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
 
-                    # 💡 「この列車を変更」ボタンを確実なセレクターでクリック
                     change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
                     try:
                         change_btn.wait_for(state="visible", timeout=10000)
@@ -235,7 +239,6 @@ def main():
                         raise Exception("「この列車を変更」ボタンが見つかりませんでした。")
                         
                     inner_success = False
-                    # 💡 動画の通り、オレンジ色の「後の列車」ボタンを最大100回連打して混雑を突破
                     for inner_attempt in range(100):
                         try:
                             later_btn = page.locator("text=後の列車").first
@@ -249,7 +252,7 @@ def main():
                             html_p2 = page.content()
                             
                             if is_e5489_error(page.title(), page.url, html_p2):
-                                print("    ⚠️ 混雑エラー発生！動画の通り即座に『前のページに戻る』を押してリトライします。")
+                                print("    ⚠️ 混雑エラー発生！即座に『前のページに戻る』を押してリトライします。")
                                 back_btn = page.locator("a:has-text('前のページに戻る')").first
                                 if back_btn.is_visible():
                                     back_btn.click(timeout=5000)
@@ -299,6 +302,8 @@ def main():
                 if alert: any_vacant = True
                 status_text += f"・{room_name} ➡️ [ {mark} ]{alert}\n"
 
+            # 💡 テスト用に、空席がなくても一度強制的にLINE通知を飛ばして動作確認したい場合は
+            # 下の行の 「or True」 を一時的に有効にしてください
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"

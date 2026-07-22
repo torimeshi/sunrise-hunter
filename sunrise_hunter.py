@@ -137,7 +137,9 @@ def scrape_page1_table(soup, status: SunRiseStatus):
 
 def scrape_page2_list(soup, status: SunRiseStatus):
     print("    📊 [解析] 2ページ目の個室リスト解析中...")
-    boxes = soup.find_all(class_=re.compile(r'changing-train|train-box|item'))
+    text_content = soup.get_text()
+    
+    boxes = soup.find_all(class_=re.compile(r'changing-train|train-box|item|service-item'))
     if not boxes:
         boxes = [soup]
 
@@ -210,7 +212,7 @@ def main():
     max_attempts = 15
     backoff_base = [2, 3, 4, 6, 8, 11, 15, 15, 15, 15, 15, 15, 15, 15, 15]
     
-    success_scrape_at_least_once = False
+    full_scan_success = False
     status_obj = SunRiseStatus()
 
     with sync_playwright() as p:
@@ -245,7 +247,7 @@ def main():
                     
                     html_p1 = page.content()
                     title_p1 = page.title()
-                    url_p1 = page.url
+                    url_p1 = page.url  # 💡 修正: カッコを消去
                     
                     if is_e5489_error(title_p1, url_p1, html_p1):
                         print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。")
@@ -255,9 +257,8 @@ def main():
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目の解析開始...")
                     soup_p1 = BeautifulSoup(html_p1, "html.parser")
                     scrape_page1_table(soup_p1, status_obj)
-                    success_scrape_at_least_once = True
 
-                    # 🎯 とりめしさんが画像で指定してくれた「▶ この列車を変更」のリンクを直接クリック
+                    # 🎯 「▶ この列車を変更」のリンクを直接クリック
                     click_targets = [
                         "a:has-text('この列車を変更')",
                         "a:has-text('他の設備')",
@@ -281,16 +282,19 @@ def main():
                         page.wait_for_load_state("domcontentloaded")
                         time.sleep(2)
                         html_p2 = page.content()
-                        if not is_e5489_error(page.title(), page.url(), html_p2):
+                        title_p2 = page.title()
+                        url_p2 = page.url  # 💡 修正: page.url() -> page.url (カッコを消去してバグ完全撃滅)
+
+                        if not is_e5489_error(title_p2, url_p2, html_p2):
                             print("    📸 [STATE: PAGE2_SCAN] 2ページ目（個室一覧）の解析開始...")
                             soup_p2 = BeautifulSoup(html_p2, "html.parser")
                             scrape_page2_list(soup_p2, status_obj)
-                            print("    🎉 [STATE: SUCCESS] 全設備の完全踏破に成功！")
+                            print("    🎉 [STATE: SUCCESS] 2ページ目（個室一覧）を含めた全設備の完全踏破に成功！")
                             page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
+                            full_scan_success = True
                             break
                     
                     page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
-                    break
                             
                 except Exception as attempt_err:
                     print("==================================================")
@@ -305,8 +309,8 @@ def main():
                 finally:
                     context.close()
 
-            if not success_scrape_at_least_once:
-                print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれ、データに辿り着けませんでした。")
+            if not full_scan_success:
+                print("\n❌ 2ページ目（個室一覧）の完全スキャンに到達できませんでした。")
                 sys.exit(1)
 
             # 空席判定
@@ -334,11 +338,11 @@ def main():
                     f"{status_text}"
                     f"===============================\n"
                 )
-                print(f"🎉 本物の画面で空席を検知！LINEへ通知します。")
+                print(f"🎉 シングル喫煙などの空席を本物の画面で検知！LINEへ通知します。")
                 send_line(msg)
                 return 
 
-            print("\n📭 Wスキャンに成功！現時点ではすべて本当に「満席」でした。")
+            print("\n📭 Wスキャンに完全成功！現時点ではすべて本当に「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")

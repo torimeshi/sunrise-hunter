@@ -36,10 +36,10 @@ jobs:
         LINE_GROUP_ID: ""
       run: python sunrise_hunter.py
 
-    # 📸 ここに画像回収用のステップをドッキングしました！
-    - name: Upload Debug Screenshot
+    # 📸 試行回数分（最大15枚）のスクショを一括回収する設定に更新！
+    - name: Upload Debug Screenshots
       uses: actions/upload-artifact@v4
-      if: always() # 💡 途中でエラーが起きても「必ず」画像を回収する設定です
+      if: always() # 💡 途中でエラーが起きても「必ず」全画像を回収します
       with:
-        name: e5489-debug-image
-        path: debug.png
+        name: e5489-all-debug-images
+        path: debug_attempt_*.png

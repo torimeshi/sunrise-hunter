@@ -106,11 +106,8 @@ def parse_mark_str(text):
     return "--"
 
 def scrape_page1_table(soup, status: SunRiseStatus):
-    tables = soup.find_all("table", class_="seat-status-table")
-    if not tables:
-        return False
-        
-    print("    📊 [解析] 1ページ目の通常設備テーブルを検出しました。")
+    print("    📊 [解析] 1ページ目の設備テーブル解析中...")
+    tables = soup.find_all("table")
     for table in tables:
         rows = table.find_all("tr")
         for row in rows:
@@ -118,13 +115,15 @@ def scrape_page1_table(soup, status: SunRiseStatus):
             is_smoking = "喫煙" in row_text
             
             mark = "--"
-            td = row.find("td")
-            if td:
+            tds = row.find_all("td")
+            for td in tds:
                 img = td.find("img")
                 if img:
                     mark = parse_mark_str(img.get("alt", ""))
                     if mark == "--":
                         mark = parse_mark_str(img.get("src", ""))
+                    if mark != "--":
+                        break
             
             if "普通" in row_text or "ノビノビ" in row_text:
                 status.nobinobi = mark
@@ -137,49 +136,34 @@ def scrape_page1_table(soup, status: SunRiseStatus):
     return True
 
 def scrape_page2_list(soup, status: SunRiseStatus):
-    lists = soup.find_all("ul", class_="changing-train-list")
-    if not lists:
-        return False
-        
-    print("    📊 [解析] 2ページ目の個室アコーディオンリストを検出しました。")
-    for u_list in lists:
-        items = u_list.find_all("li", recursive=False)
-        for item in items:
-            header_train = item.find(class_="train-info-heading__train")
-            if not header_train:
-                continue
-            header_text = "".join(header_train.stripped_strings)
-            
-            category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
-            if not category_match:
-                continue
-            category = category_match.group(1) or category_match.group(2)
-            
-            boxes = item.find_all(class_="changing-train-box")
-            for box in boxes:
-                box_text = "".join(box.stripped_strings)
-                is_smoking = "喫煙" in box_text
+    print("    📊 [解析] 2ページ目の個室リスト解析中...")
+    boxes = soup.find_all(class_=re.compile(r'changing-train|train-box|item'))
+    if not boxes:
+        boxes = [soup]
+
+    for box in boxes:
+        box_text = "".join(box.stripped_strings)
+        if "ソロ" in box_text or "シングル" in box_text or "サンライズツイン" in box_text:
+            imgs = box.find_all("img")
+            for img in imgs:
+                alt_txt = img.get("alt", "")
+                src_txt = img.get("src", "")
+                mark = parse_mark_str(alt_txt)
+                if mark == "--":
+                    mark = parse_mark_str(src_txt)
                 
-                mark = "--"
-                status_div = box.find(class_="changing-train-box__status")
-                if status_div:
-                    img = status_div.find("img")
-                    if img:
-                        mark = parse_mark_str(img.get("alt", ""))
-                        if mark == "--":
-                            mark = parse_mark_str(img.get("src", ""))
-                
-                if mark == "--" and "disabled" in "".join(box.get("class", [])):
-                    mark = "×"
+                if mark != "--":
+                    parent_text = img.parent.parent.get_text() if img.parent and img.parent.parent else box_text
+                    is_smoking = "喫煙" in parent_text
                     
-                if "ソロ" in category:
-                    status.solo = mark
-                elif "サンライズツイン" in category or "サツイン" in category:
-                    if is_smoking: status.sunrise_twin_kitsuyen = mark
-                    else: status.sunrise_twin_kinyen = mark
-                elif "シングル" in category and "ツイン" not in category:
-                    if is_smoking: status.single_kitsuyen = mark
-                    else: status.single_kinyen = mark
+                    if "ソロ" in parent_text:
+                        status.solo = mark
+                    elif "サンライズツイン" in parent_text:
+                        if is_smoking: status.sunrise_twin_kitsuyen = mark
+                        else: status.sunrise_twin_kinyen = mark
+                    elif "シングル" in parent_text and "ツイン" not in parent_text:
+                        if is_smoking: status.single_kitsuyen = mark
+                        else: status.single_kinyen = mark
     return True
 
 def main():
@@ -189,7 +173,6 @@ def main():
 
     config = get_target_config()
     
-    # 過去日付ガード
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
@@ -197,7 +180,7 @@ def main():
         print(f"⚠️ 【自動停止】指定された乗車日（{config['month']}月{config['day']}日）は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 モバイル完全偽装Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 PC最適化Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -242,19 +225,23 @@ def main():
 
                 if attempt > 0:
                     sleep_time = backoff_base[attempt] + random.uniform(0.5, 2.0)
-                    print(f"⏳ サーバー混雑中... {sleep_time:.2f}秒後にモバイル再突撃します...")
+                    print(f"⏳ サーバー混雑中... {sleep_time:.2f}秒後に再突撃します...")
                     time.sleep(sleep_time)
 
-                print(f"📱 【iPhone13型独立窓】アタック {current_attempt_num} / {max_attempts} 回目...")
+                print(f"💻 【PC標準窓】アタック {current_attempt_num} / {max_attempts} 回目...")
                 
-                iphone_config = p.devices["iPhone 13"]
-                context = browser.new_context(**iphone_config)
+                context = browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+                )
                 page = context.new_page()
                 
                 try:
-                    # 🔑 初期セッションの確立
                     page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
                     page.goto(direct_url, referer=referer_url, timeout=15000)
+                    
+                    page.wait_for_load_state("domcontentloaded")
+                    time.sleep(2)
                     
                     html_p1 = page.content()
                     title_p1 = page.title()
@@ -262,49 +249,56 @@ def main():
                     
                     if is_e5489_error(title_p1, url_p1, html_p1):
                         print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。")
-                        # 📸 試行回数ごとに別名で保存！
                         page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                         continue
 
-                    # 正常ルートのロードを待機
-                    page.locator(".seat-status-table").wait_for(timeout=8000)
-                    
-                    print("    📸 [STATE: PAGE1_SCAN] 1ページ目の通常設備スキャン中...")
+                    print("    📸 [STATE: PAGE1_SCAN] 1ページ目の解析開始...")
                     soup_p1 = BeautifulSoup(html_p1, "html.parser")
                     scrape_page1_table(soup_p1, status_obj)
                     success_scrape_at_least_once = True
 
-                    popup_link = page.locator(".popup-link")
-                    popup_link.wait_for(timeout=3000)
-                    popup_link.first.click()
-                    
-                    next_btn = page.locator(".change-next-train-button")
-                    next_btn.wait_for(timeout=4000)
-                    next_btn.click()
-                    
-                    page.locator(".changing-train-list").wait_for(timeout=8000)
-                    
-                    html_p2 = page.content()
-                    if is_e5489_error(page.title(), page.url(), html_p2):
-                        print("    ⚠️ [混雑・エラー検知] 2ページ目への遷移中に弾かれました。")
-                        page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
-                        continue
+                    # 🎯 とりめしさんが画像で指定してくれた「▶ この列車を変更」のリンクを直接クリック
+                    click_targets = [
+                        "a:has-text('この列車を変更')",
+                        "a:has-text('他の設備')",
+                        ".popup-link",
+                        "td a[href*='CBDayTime']"
+                    ]
 
-                    print("    📸 [STATE: PAGE2_SCAN] 2ページ目の個室アコーディオンを解析中...")
-                    soup_p2 = BeautifulSoup(html_p2, "html.parser")
-                    scrape_page2_list(soup_p2, status_obj)
-                    print("    🎉 [STATE: SUCCESS] 全設備の完全踏破に成功！")
+                    clicked = False
+                    for selector in click_targets:
+                        try:
+                            elem = page.locator(selector).first
+                            if elem.is_visible():
+                                print(f"    👉 指定リンク（{selector}）をクリックして個室一覧へ遷移します...")
+                                elem.click(timeout=5000)
+                                clicked = True
+                                break
+                        except:
+                            continue
+
+                    if clicked:
+                        page.wait_for_load_state("domcontentloaded")
+                        time.sleep(2)
+                        html_p2 = page.content()
+                        if not is_e5489_error(page.title(), page.url(), html_p2):
+                            print("    📸 [STATE: PAGE2_SCAN] 2ページ目（個室一覧）の解析開始...")
+                            soup_p2 = BeautifulSoup(html_p2, "html.parser")
+                            scrape_page2_list(soup_p2, status_obj)
+                            print("    🎉 [STATE: SUCCESS] 全設備の完全踏破に成功！")
+                            page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
+                            break
+                    
+                    page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                     break
                             
                 except Exception as attempt_err:
                     print("==================================================")
                     print(f"❌ アタック {current_attempt_num} 回目でエラーが発生しました。")
-                    print(f"型: {type(attempt_err)}")
                     print(f"内容: {attempt_err}")
                     traceback.print_exc()
                     print("==================================================")
                     try:
-                        # 📸 タイムアウトで落ちた時もそのアタック番号で撮影！
                         page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                     except:
                         pass
@@ -340,11 +334,11 @@ def main():
                     f"{status_text}"
                     f"===============================\n"
                 )
-                print(f"🎉 混雑をすり抜け、本物の画面で空席を検知！LINEへ通知します。")
+                print(f"🎉 本物の画面で空席を検知！LINEへ通知します。")
                 send_line(msg)
                 return 
 
-            print("\n📭 スマホ版Wスキャンリレーに完全成功！現時点ではすべて本当に「満席」でした。")
+            print("\n📭 Wスキャンに成功！現時点ではすべて本当に「満席」でした。")
 
         except Exception as e:
             print(f"❌ エラー発生: {e}")

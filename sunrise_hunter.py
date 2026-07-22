@@ -111,7 +111,6 @@ def scrape_page1_table(soup, status: SunRiseStatus):
         return False
         
     print("    📊 [解析] 1ページ目の通常設備テーブルを検出しました。")
-    base_name = "サンライズ瀬戸・出雲"
     for table in tables:
         rows = table.find_all("tr")
         for row in rows:
@@ -151,7 +150,6 @@ def scrape_page2_list(soup, status: SunRiseStatus):
                 continue
             header_text = "".join(header_train.stripped_strings)
             
-            base_name = "サンライズ瀬戸・出雲"
             category_match = re.search(r'（(.+?)）|\((.+?)\)', header_text)
             if not category_match:
                 continue
@@ -240,12 +238,14 @@ def main():
                 if not is_within_active_hours():
                     return
 
+                current_attempt_num = attempt + 1
+
                 if attempt > 0:
                     sleep_time = backoff_base[attempt] + random.uniform(0.5, 2.0)
                     print(f"⏳ サーバー混雑中... {sleep_time:.2f}秒後にモバイル再突撃します...")
                     time.sleep(sleep_time)
 
-                print(f"📱 【iPhone13型独立窓】アタック {attempt + 1} / {max_attempts} 回目...")
+                print(f"📱 【iPhone13型独立窓】アタック {current_attempt_num} / {max_attempts} 回目...")
                 
                 iphone_config = p.devices["iPhone 13"]
                 context = browser.new_context(**iphone_config)
@@ -254,8 +254,6 @@ def main():
                 try:
                     # 🔑 初期セッションの確立
                     page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
-                    
-                    # ワープURLへ突撃
                     page.goto(direct_url, referer=referer_url, timeout=15000)
                     
                     html_p1 = page.content()
@@ -264,7 +262,8 @@ def main():
                     
                     if is_e5489_error(title_p1, url_p1, html_p1):
                         print(f"    ⚠️ [混雑・エラー検知] タイトル: '{title_p1}'、URL: {url_p1}。")
-                        page.screenshot(path="debug.png", full_page=True)
+                        # 📸 試行回数ごとに別名で保存！
+                        page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                         continue
 
                     # 正常ルートのロードを待機
@@ -288,7 +287,7 @@ def main():
                     html_p2 = page.content()
                     if is_e5489_error(page.title(), page.url(), html_p2):
                         print("    ⚠️ [混雑・エラー検知] 2ページ目への遷移中に弾かれました。")
-                        page.screenshot(path="debug.png", full_page=True)
+                        page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                         continue
 
                     print("    📸 [STATE: PAGE2_SCAN] 2ページ目の個室アコーディオンを解析中...")
@@ -299,14 +298,14 @@ def main():
                             
                 except Exception as attempt_err:
                     print("==================================================")
-                    print(f"❌ アタック {attempt + 1} 回目でエラーが発生しました。")
+                    print(f"❌ アタック {current_attempt_num} 回目でエラーが発生しました。")
                     print(f"型: {type(attempt_err)}")
                     print(f"内容: {attempt_err}")
                     traceback.print_exc()
                     print("==================================================")
                     try:
-                        # 📸 タイムアウトで落ちた時も、その瞬間のフリーズ画面を確実にパシャリ
-                        page.screenshot(path="debug.png", full_page=True)
+                        # 📸 タイムアウトで落ちた時もそのアタック番号で撮影！
+                        page.screenshot(path=f"debug_attempt_{current_attempt_num}.png", full_page=True)
                     except:
                         pass
                 finally:
@@ -316,6 +315,7 @@ def main():
                 print("\n❌ 【真実のログ】15回すべてがブロックまたは混雑に阻まれ、データに辿り着けませんでした。")
                 sys.exit(1)
 
+            # 空席判定
             any_vacant = False
             status_text = ""
 
@@ -332,7 +332,7 @@ def main():
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
-                    f"お目当て of キャンセルが放流されました！\n\n"
+                    f"お目当てのキャンセルが放流されました！\n\n"
                     f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"

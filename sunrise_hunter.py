@@ -112,12 +112,10 @@ def scrape_page1_table(soup, status: SunRiseStatus):
             th_tds = tr.find_all(["th", "td"])
             texts = [x.get_text(strip=True) for x in th_tds]
             
-            # 動画00:16の通り、列のヘッダー（普通・A寝台・B寝台）を記憶する
             if any("普通" in t or "寝台" in t for t in texts):
                 headers = texts
                 continue
             
-            # ヘッダーが取得済みで、記号（○△×）が含まれる行ならデータをマッピング
             if headers and any(parse_mark_str(str(x)) != "--" for x in th_tds):
                 for i, cell in enumerate(th_tds):
                     if i < len(headers):
@@ -145,7 +143,6 @@ def scrape_page2_list(soup, status: SunRiseStatus):
             th_tds = tr.find_all(["th", "td"])
             texts = [x.get_text(strip=True) for x in th_tds]
             
-            # 動画00:23の通り、列のヘッダー（禁煙・喫煙）を記憶する
             if any("禁煙" in t or "喫煙" in t for t in texts):
                 headers = texts
                 continue
@@ -165,7 +162,6 @@ def scrape_page2_list(soup, status: SunRiseStatus):
                     if headers and i < len(headers):
                         if "喫煙" in headers[i]: is_smoking = True
                     else:
-                        # ヘッダーが見つからなかった場合のフォールバック (0:列車名, 1:禁煙, 2:喫煙)
                         if i == 2: is_smoking = True
                         
                     if category == "ソロ":
@@ -178,10 +174,11 @@ def scrape_page2_list(soup, status: SunRiseStatus):
                         else: status.sunrise_twin_kinyen = mark
     return True
 
-def save_debug_files(page, attempt_num, prefix=""):
+def save_debug_files(page, attempt_num, state=""):
     try:
-        page.screenshot(path=f"debug_{prefix}attempt_{attempt_num}.png", full_page=True)
-        with open(f"debug_{prefix}attempt_{attempt_num}.html", "w", encoding="utf-8") as f:
+        base_path = f"debug_attempt_{attempt_num}_{state}"
+        page.screenshot(path=f"{base_path}.png", full_page=True)
+        with open(f"{base_path}.html", "w", encoding="utf-8") as f:
             f.write(page.content())
     except:
         pass
@@ -200,7 +197,7 @@ def main():
         print(f"⚠️ 【自動停止】指定された乗車日は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 デスクトップ特化・超堅牢Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 デスクトップ特化・超速マシンガン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -225,9 +222,8 @@ def main():
     direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
 
-    max_attempts = 15
-    backoff_base = [2, 3, 4, 6, 8, 11, 15, 15, 15, 15, 15, 15, 15, 15, 15]
-    
+    # 外側のアタック（初期アクセスからのやり直し）も30回確保
+    max_attempts = 30
     full_scan_success = False
     status_obj = SunRiseStatus()
 
@@ -242,11 +238,11 @@ def main():
                 current_attempt_num = attempt + 1
 
                 if attempt > 0:
-                    sleep_time = backoff_base[attempt] + random.uniform(0.5, 2.0)
-                    print(f"⏳ サーバー混雑中... {sleep_time:.2f}秒後に再突撃します...")
+                    sleep_time = random.uniform(0.5, 1.5)
+                    print(f"⏳ サーバー混雑中... ノータイム（{sleep_time:.2f}秒後）で超速再突撃します...")
                     time.sleep(sleep_time)
 
-                print(f"💻 【PC標準窓】アタック {current_attempt_num} / {max_attempts} 回目...")
+                print(f"💻 【PC標準窓】超速アタック {current_attempt_num} / {max_attempts} 回目...")
                 context = browser.new_context(
                     viewport={"width": 1280, "height": 800},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -258,7 +254,7 @@ def main():
                     page.goto(direct_url, referer=referer_url, timeout=15000)
                     
                     try:
-                        page.locator("img").first.wait_for(timeout=10000, state="visible")
+                        page.locator("text=サンライズ").first.wait_for(timeout=10000, state="visible")
                     except:
                         pass
                     
@@ -268,7 +264,7 @@ def main():
                     
                     if is_e5489_error(title_p1, url_p1, html_p1):
                         print(f"    ⚠️ [混雑・エラー検知] 1ページ目で弾かれました。")
-                        save_debug_files(page, current_attempt_num, "err_p1_")
+                        save_debug_files(page, current_attempt_num, "err_p1")
                         continue
 
                     print("    📸 [STATE: PAGE1_SCAN] 1ページ目の解析開始...")
@@ -279,35 +275,31 @@ def main():
                     if not is_data_acquired(status_obj, p1_keys):
                         raise Exception("1ページ目の座席データ(○△×)取得に失敗しました。")
 
-                    # 💡 動画00:16 「この列車を変更」をクリック
                     change_btn = page.locator("a:has-text('この列車を変更')").first
                     if change_btn.is_visible():
                         print("    👉 「この列車を変更」をクリックします...")
                         change_btn.click(timeout=5000)
                         
                         inner_success = False
-                        # 💡 動画00:19〜00:22 の「エラー ➡️ 戻る ➡️ 変更 ➡️ 後の列車」神業ループ
-                        for inner_attempt in range(5):
+                        # 💡 限界突破！ポップアップ内での「戻る➡️後の列車」の連打上限を『100回』に設定！
+                        for inner_attempt in range(100):
                             later_btn = page.locator("text=後の列車").first
                             later_btn.wait_for(state="visible", timeout=5000)
-                            print(f"    👉 ポップアップ内の「後の列車」をクリックします（内部試行 {inner_attempt+1}/5）...")
+                            print(f"    👉 ポップアップ内の「後の列車」をクリック（怒涛の内部連打 {inner_attempt+1}/100）...")
                             later_btn.click(timeout=5000)
                             
                             page.wait_for_load_state("networkidle", timeout=10000)
-                            time.sleep(1)
                             
                             html_p2 = page.content()
                             title_p2 = page.title()
                             
-                            # 混雑エラー(20100801)が出たら「前のページに戻る」を押して即復活
                             if is_e5489_error(title_p2, page.url, html_p2):
-                                print("    ⚠️ 2ページ目遷移で混雑エラー発生！動画の通り『戻る』を押してリトライします。")
+                                print("    ⚠️ 2ページ目遷移で混雑エラー！即座に『戻る』を押してノータイムリトライします。")
                                 back_btn = page.locator("a:has-text('前のページに戻る')").first
                                 if back_btn.is_visible():
                                     back_btn.click(timeout=5000)
                                     page.wait_for_load_state("networkidle", timeout=10000)
-                                    time.sleep(1)
-                                    # 1ページ目に戻ったので再度ポップアップを開く
+                                    # 戻ったら即座にモーダルを開き直す（待機時間なし）
                                     change_btn.click(timeout=5000)
                                     continue
                                 else:
@@ -317,7 +309,6 @@ def main():
                                 break
                                 
                         if inner_success:
-                            # 💡 遷移後、「（シングル）」の文字が画面に出現するのを絶対的証拠として待機
                             try:
                                 print("    ⏳ 個室一覧の展開（シングルの文字出現）を待機中...")
                                 page.locator("text=（シングル）").first.wait_for(timeout=10000, state="visible")
@@ -333,7 +324,7 @@ def main():
                                 raise Exception("2ページ目に遷移しましたが、ソロやシングルのデータが1件も取得できませんでした。")
 
                             print("    🎉 [STATE: SUCCESS] 全設備の完全踏破とデータ取得に成功！")
-                            save_debug_files(page, current_attempt_num, "success_")
+                            save_debug_files(page, current_attempt_num, "success")
                             full_scan_success = True
                             break
                     else:
@@ -344,7 +335,7 @@ def main():
                     print(f"❌ アタック {current_attempt_num} 回目でエラー/検証失敗が発生しました。")
                     print(f"内容: {attempt_err}")
                     print("==================================================")
-                    save_debug_files(page, current_attempt_num, "fail_")
+                    save_debug_files(page, current_attempt_num, "fail")
                 finally:
                     context.close()
 

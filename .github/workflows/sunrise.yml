@@ -36,7 +36,7 @@ jobs:
       env:
         CONFIG_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vSX12jD6ygnA3WdGUMVzaXQBMyAXJdzPOdVFv4JVTUamVSyhxn8TZHiZL1sTwDJ3xut1Up1m7AGWHSK/pub?gid=2106773244&single=true&output=csv"
         LINE_ACCESS_TOKEN: "ddkFcNw/DhH5nfiUkVzCRCJsmasDQ1zUwi9clTGX7B0aO2u2ftDpSDL+bPcc5tDbiB2cGRKdZqTlFJ3M5U8XkvrLnd1n2Drw1/wiS6PzTpM3XS1buteOBGbQO+HUVRUHHYVfJCOxnXsZX4CU1kcDGQdB04t89/1O/w1cDnyilFU="
-        LINE_USER_ID: "Ub1d15b78b0898bc8423f8cebe68ad1fa"
+        LINE_USER_ID: "Ud3b4bcdfe5eba86e2c589a48607d0279"
         LINE_GROUP_ID: ""
       run: python sunrise_hunter.py
 

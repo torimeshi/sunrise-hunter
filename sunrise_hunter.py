@@ -46,19 +46,33 @@ class SunRiseStatus:
 
 def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {LINE_TOKEN}", 
+        "Content-Type": "application/json"
+    }
     
-    # デバッグ用に環境変数がセットされているかも表示
-    print(f"🔧 [LINE設定確認] TOKEN有無: {bool(LINE_TOKEN)}, USER_ID有無: {bool(LINE_USER)}, GROUP_ID有無: {bool(LINE_GROUP)}")
+    # 有効な宛先だけをリストアップする
+    targets = []
+    if LINE_USER and LINE_USER.strip():
+        targets.append(LINE_USER.strip())
+    if LINE_GROUP and LINE_GROUP.strip():
+        targets.append(LINE_GROUP.strip())
 
-    for to_id in [LINE_USER, LINE_GROUP]:
-        if to_id:
-            payload = {"to": to_id, "messages": [{"type": "text", "text": message}]}
-            try:
-                res = requests.post(url, headers=headers, json=payload, timeout=10)
-                print(f"📢 LINE APIレスポンス (宛先: {to_id}): ステータス {res.status_code}, 内容: {res.text}")
-            except Exception as e:
-                print(f"❌ LINE送信例外 (宛先: {to_id}): {e}")
+    if not targets:
+        print("❌ LINE送信エラー: 有効な USER_ID も GROUP_ID も設定されていません。")
+        return
+
+    for to_id in targets:
+        payload = {
+            "to": to_id, 
+            "messages": [{"type": "text", "text": message}]
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            print(f"📢 LINE APIレスポンス (宛先: {to_id}): ステータス {res.status_code}")
+            print(f"📄 レスポンス詳細: {res.text}")
+        except Exception as e:
+            print(f"❌ LINE送信例外 (宛先: {to_id}): {e}")
 
 def get_target_config():
     try:
@@ -166,7 +180,7 @@ def main():
         print(f"⚠️ 【自動停止】指定された乗車日は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 最終完全版(V10) Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 最終完全版(V11) Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -252,7 +266,7 @@ def main():
                             html_p2 = page.content()
                             
                             if is_e5489_error(page.title(), page.url, html_p2):
-                                print("    ⚠️ 混雑エラー発生！即座に『前のページに戻る』を押してリトライします。")
+                                print("    ⚠️ 混雑エラー発生！動画の通り即座に『前のページに戻る』を押してリトライします。")
                                 back_btn = page.locator("a:has-text('前のページに戻る')").first
                                 if back_btn.is_visible():
                                     back_btn.click(timeout=5000)
@@ -302,8 +316,6 @@ def main():
                 if alert: any_vacant = True
                 status_text += f"・{room_name} ➡️ [ {mark} ]{alert}\n"
 
-            # 💡 テスト用に、空席がなくても一度強制的にLINE通知を飛ばして動作確認したい場合は
-            # 下の行の 「or True」 を一時的に有効にしてください
             if any_vacant:
                 msg = (
                     f"【🚨 サンライズ空席速報！！】\n"
@@ -312,7 +324,7 @@ def main():
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"
                     f"===============================\n"
-                    f"{status_text}"
+                    f"{status_text}
                     f"===============================\n"
                 )
                 print(f"🎉 厳密な検証を通過し空席を検知！LINEへ通知します。")

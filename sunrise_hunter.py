@@ -51,7 +51,6 @@ def send_line(message):
         "Content-Type": "application/json"
     }
     
-    # 有効な宛先だけをリストアップする
     targets = []
     if LINE_USER and LINE_USER.strip():
         targets.append(LINE_USER.strip())
@@ -180,7 +179,7 @@ def main():
         print(f"⚠️ 【自動停止】指定された乗車日は過去の日付です。")
         sys.exit(0)
 
-    print(f"🎯 最終完全版(V11) Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+    print(f"🎯 最終完全版 Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
 
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
@@ -266,7 +265,7 @@ def main():
                             html_p2 = page.content()
                             
                             if is_e5489_error(page.title(), page.url, html_p2):
-                                print("    ⚠️ 混雑エラー発生！動画の通り即座に『前のページに戻る』を押してリトライします。")
+                                print("    ⚠️ 混雑エラー発生！即座に『前のページに戻る』を押してリトライします。")
                                 back_btn = page.locator("a:has-text('前のページに戻る')").first
                                 if back_btn.is_visible():
                                     back_btn.click(timeout=5000)
@@ -324,7 +323,7 @@ def main():
                     f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
                     f"🔥 現在の全設備ステータス:\n"
                     f"===============================\n"
-                    f"{status_text}
+                    f"{status_text}"
                     f"===============================\n"
                 )
                 print(f"🎉 厳密な検証を通過し空席を検知！LINEへ通知します。")

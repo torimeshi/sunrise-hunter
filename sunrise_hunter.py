@@ -69,7 +69,6 @@ def get_target_config():
         raw_date = latest[1].replace("/", "-")
         dt = datetime.strptime(raw_date, "%Y-%m-%d")
         
-        # E列: 希望設備, F列: 前回ステータス
         target_facility = latest[4].strip() if len(latest) > 4 and latest[4].strip() else "全設備"
         last_status_str = latest[5].strip() if len(latest) > 5 else "RESET"
 
@@ -143,11 +142,9 @@ def parse_table_data(soup, status: SunRiseStatus):
                     status.sunrise_twin_kitsuyen = b_kitsuyen
 
 def filter_status_by_target(status_dict, target_facility):
-    """💡 フォームの選択肢（未選択、ノビノビ座席、ソロ、シングル等）に合わせて厳密フィルタリング"""
     if not target_facility or target_facility.strip() in ["", "全設備", "未選択"]:
         return status_dict
     
-    # 複数選択（カンマや読点区切り）に対応
     targets = [t.strip() for t in target_facility.replace("、", ",").split(",") if t.strip()]
     if not targets:
         return status_dict
@@ -156,19 +153,12 @@ def filter_status_by_target(status_dict, target_facility):
     for key, val in status_dict.items():
         matched = False
         for t in targets:
-            if ("ノビノビ" in t) and ("ノビノビ" in key):
-                matched = True
-            elif (t == "ソロ") and ("ソロ" in key):
-                matched = True
-            elif ("シングルツイン" in t) and ("シングルツイン" in key):
-                matched = True
-            elif ("シングルデラックス" in t) and ("シングルデラックス" in key):
-                matched = True
-            elif ("サンライズツイン" in t) and ("サンライズツイン" in key):
-                matched = True
-            # 💡 「シングル」単体指定の場合：ツインやデラックスを除外して厳密一致
-            elif (t == "シングル") and ("シングル" in key) and ("シングルツイン" not in key) and ("シングルデラックス" not in key):
-                matched = True
+            if ("ノビノビ" in t) and ("ノビノビ" in key): matched = True
+            elif (t == "ソロ") and ("ソロ" in key): matched = True
+            elif ("シングルツイン" in t) and ("シングルツイン" in key): matched = True
+            elif ("シングルデラックス" in t) and ("シングルデラックス" in key): matched = True
+            elif ("サンライズツイン" in t) and ("サンライズツイン" in key): matched = True
+            elif (t == "シングル") and ("シングル" in key) and ("シングルツイン" not in key) and ("シングルデラックス" not in key): matched = True
 
         if matched:
             filtered[key] = val
@@ -176,48 +166,52 @@ def filter_status_by_target(status_dict, target_facility):
     return filtered if filtered else status_dict
 
 def scan_once(page, direct_url, referer_url, status_obj):
-    page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
-    page.goto(direct_url, referer=referer_url, timeout=15000)
-    
     try:
-        page.locator("table.train-info-table").first.wait_for(timeout=10000, state="visible")
-    except:
-        pass
-    
-    html_p1 = page.content()
-    if is_e5489_error(page.title(), page.url, html_p1):
-        return False
-
-    parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
-
-    change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
-    if not change_btn.is_visible():
-        return False
-    change_btn.click(timeout=5000)
-
-    for inner_attempt in range(15):
+        page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
+        page.goto(direct_url, referer=referer_url, timeout=15000)
+        
         try:
-            later_btn = page.locator("text=後の列車").first
-            later_btn.wait_for(state="visible", timeout=5000)
-            later_btn.click(timeout=5000)
-            page.wait_for_load_state("networkidle", timeout=10000)
-            time.sleep(1)
-            
-            html_p2 = page.content()
-            if is_e5489_error(page.title(), page.url, html_p2):
-                back_btn = page.locator("a:has-text('前のページに戻る')").first
-                if back_btn.is_visible():
-                    back_btn.click(timeout=5000)
-                    page.wait_for_load_state("networkidle", timeout=10000)
-                    change_btn.click(timeout=5000)
-                    continue
-                else:
-                    return False
-            else:
-                parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
-                return True
+            page.locator("table.train-info-table").first.wait_for(timeout=10000, state="visible")
         except:
+            pass
+        
+        html_p1 = page.content()
+        if is_e5489_error(page.title(), page.url, html_p1):
             return False
+
+        parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
+
+        change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
+        if not change_btn.is_visible():
+            return False
+        change_btn.click(timeout=5000)
+
+        for inner_attempt in range(15):
+            try:
+                later_btn = page.locator("text=後の列車").first
+                later_btn.wait_for(state="visible", timeout=5000)
+                later_btn.click(timeout=5000)
+                page.wait_for_load_state("networkidle", timeout=10000)
+                time.sleep(1)
+                
+                html_p2 = page.content()
+                if is_e5489_error(page.title(), page.url, html_p2):
+                    back_btn = page.locator("a:has-text('前のページに戻る')").first
+                    if back_btn.is_visible():
+                        back_btn.click(timeout=5000)
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        change_btn.click(timeout=5000)
+                        continue
+                    else:
+                        return False
+                else:
+                    parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
+                    return True
+            except:
+                return False
+    except Exception as e:
+        print(f"    ⚠️ スキャン中にエラーが発生: {e}")
+        return False
     return False
 
 def main():
@@ -259,6 +253,7 @@ def main():
         page = context.new_page()
 
         for loop_cnt in range(10):
+            print(f"\n🔍 [巡回 {loop_cnt+1}/10 回目] e5489へアクセス中...")
             status_obj = SunRiseStatus()
             success = scan_once(page, direct_url, referer_url, status_obj)
 
@@ -268,6 +263,8 @@ def main():
                 
                 current_status_str = "|".join([f"{k}:{v}" for k, v in target_status.items()])
                 last_status_str = config["last_status_str"]
+
+                print(f"    📊 取得結果: {target_status}")
 
                 if last_status_str == "RESET" or current_status_str != last_status_str:
                     status_text = ""
@@ -287,12 +284,17 @@ def main():
                         f"{status_text}"
                         f"===============================\n"
                     )
-                    print(f"📢 状態の変化（または初回）を検知！LINEへ送信します。")
+                    print(f"    📢 前回から状態が変化したため（または初回）、LINE通知を送信します！")
                     send_line(msg)
                     break
+                else:
+                    print("    🔕 前回通知したステータスと変化がないため、LINE通知をスキップしました。")
+            else:
+                print("    ⚠️ 今回の巡回ではデータの完全取得に失敗しました（リトライします）。")
             
-            print(f"⏳ 次の高速巡回まで15秒待機... ({loop_cnt+1}/10回目)")
-            time.sleep(15)
+            if loop_cnt < 9:
+                print("    ⏳ 15秒待機して次の巡回へ進みます...")
+                time.sleep(15)
 
         browser.close()
 

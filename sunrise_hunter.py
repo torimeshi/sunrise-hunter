@@ -14,6 +14,7 @@ CSV_URL = os.environ.get("CONFIG_CSV_URL")
 LINE_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER = os.environ.get("LINE_USER_ID")
 LINE_GROUP = os.environ.get("LINE_GROUP_ID")
+GITHUB_EVENT = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
 # 列車カナコード (CP932)
 KANA_SETO = "%BB%BE%C4%20%20000"     # ｻﾝﾗｲｽﾞｾﾄ
@@ -53,7 +54,6 @@ def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"}
     
-    # 💡 重複宛先を排除して1通のみ送信
     raw_targets = [LINE_USER, LINE_GROUP]
     targets = list(dict.fromkeys([t.strip() for t in raw_targets if t and t.strip()]))
     
@@ -186,18 +186,9 @@ def filter_status_by_target(status_dict, target_facility):
 
     return filtered if filtered else status_dict
 
-def save_error_screenshot(page, prefix):
-    try:
-        filename = f"error_{prefix}_{int(time.time())}.png"
-        page.screenshot(path=filename, full_page=True)
-        print(f"        📸 エラー画面を保存しました: {filename}")
-    except:
-        pass
-
 def scan_train_once(context, train_name, direct_url, referer_url):
     page = context.new_page()
     status_obj = SunRiseStatus()
-    clean_name = "seto" if "瀬戸" in train_name else "izumo"
     
     try:
         page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
@@ -210,8 +201,6 @@ def scan_train_once(context, train_name, direct_url, referer_url):
         
         html_p1 = page.content()
         if is_e5489_error(page.title(), page.url, html_p1):
-            print(f"        ⚠️ 1ページ目でe5489混雑・エラー検知 ({train_name})")
-            save_error_screenshot(page, f"{clean_name}_p1_err")
             page.close()
             return None
 
@@ -221,9 +210,7 @@ def scan_train_once(context, train_name, direct_url, referer_url):
         try:
             change_btn.wait_for(state="visible", timeout=8000)
             change_btn.evaluate("el => el.click()")
-        except Exception as e:
-            print(f"        ⚠️ 「この列車を変更」ボタン押下失敗: {e}")
-            save_error_screenshot(page, f"{clean_name}_change_btn_fail")
+        except Exception:
             page.close()
             return None
 
@@ -233,8 +220,9 @@ def scan_train_once(context, train_name, direct_url, referer_url):
                 later_btn.wait_for(state="visible", timeout=5000)
                 later_btn.evaluate("el => el.click()")
                 
-                # 💡 networkidleを撤廃し、描画完了を1.5秒待機
-                time.sleep(1.5)
+                # 💡 個室テーブル描画を待機
+                page.locator("table.train-info-table").first.wait_for(state="visible", timeout=8000)
+                time.sleep(1.0)
                 
                 html_p2 = page.content()
                 if is_e5489_error(page.title(), page.url, html_p2):
@@ -246,20 +234,24 @@ def scan_train_once(context, train_name, direct_url, referer_url):
                         change_btn.evaluate("el => el.click()")
                         continue
                     else:
-                        save_error_screenshot(page, f"{clean_name}_p2_err")
                         page.close()
                         return None
                 else:
                     parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
+                    
+                    # 💡 2ページ目のデータが正しく取れているか確認
+                    p2_data = [status_obj.solo, status_obj.single_kinyen, status_obj.single_kitsuyen, status_obj.sunrise_twin_kinyen]
+                    if all(m == "--" for m in p2_data):
+                        page.close()
+                        return None
+
                     page.close()
                     return status_obj
-            except Exception as e:
-                save_error_screenshot(page, f"{clean_name}_popup_timeout")
+            except Exception:
                 page.close()
                 return None
     except Exception as e:
         print(f"        ⚠️ スキャン処理エラー: {e}")
-        save_error_screenshot(page, f"{clean_name}_critical_err")
         try:
             page.close()
         except:
@@ -279,7 +271,6 @@ def build_direct_url(config, facility_id):
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
     target_date = f"{int(config['year'])}{int(config['month']):02d}{int(config['day']):02d}"
     
-    # 💡 出雲92号（14:37発）と定期便（18:57発）の両方に対応
     if config["dep"] == "東京":
         hour, minute = ("21", "00")
     elif config["dep"] == "三ノ宮":
@@ -333,9 +324,11 @@ def main():
 
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
     
-    last_notified_status = None
-    consecutive_failures = 0
-    failure_alerted = False
+    # 💡 1時間ごとの定期報告判定（毎時0分〜4分の定期実行時）
+    is_hourly_report_window = (now_jst.minute < 5) and (GITHUB_EVENT == "schedule")
+    is_manual_trigger = (GITHUB_EVENT in ["workflow_dispatch", "repository_dispatch"])
+    
+    has_reported_status = False
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -358,60 +351,66 @@ def main():
                 else:
                     print(f"    ⚠️ {train_name} の取得失敗")
 
-            if all_train_results:
-                consecutive_failures = 0
-                
-                current_status_str = ""
+            # 💡 併結区間も含め、対象全列車が100%揃った場合のみ判定
+            if len(all_train_results) == len(target_trains):
                 any_vacant = False
                 status_text = ""
 
                 for t_name, f_dict in all_train_results.items():
                     status_text += f"\n🚆【{t_name}】\n"
-                    current_status_str += f"[{t_name}]"
                     for r_name, mark in f_dict.items():
                         alert = " 🎉空席!!" if mark in ["○", "△", "◇"] else ""
                         if alert: any_vacant = True
                         status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
-                        current_status_str += f"{r_name}:{mark}|"
 
-                is_first_run = (last_notified_status is None)
-                has_changed = (current_status_str != last_notified_status)
-
-                if is_first_run or has_changed:
-                    title = "【🚨 サンライズ空席速報！！】" if any_vacant else "【ℹ️ サンライズ空席状況案内】"
+                if any_vacant:
+                    # 🚨 空席が出た瞬間は即座に通知
                     msg = (
-                        f"{title}\n"
+                        f"【🚨 サンライズ空席速報！！】\n"
+                        f"お目当てのキャンセル空席が出ました！\n\n"
                         f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n"
                         f"[希望設備] {config['target_facility']}\n"
                         f"==============================="
                         f"{status_text}"
                         f"===============================\n"
                     )
-                    log_label = "初回現状報告" if is_first_run else "状態変化検知"
-                    print(f"    📢 [{log_label}] LINE通知を送信します！")
+                    print("    📢 🎉 空席検知！LINE通知を送信します！")
                     send_line(msg)
-                    last_notified_status = current_status_str
+                    time.sleep(15)
 
-                wait_sec = 15 if any_vacant else 5
+                elif not has_reported_status:
+                    # 💡 手動起動時（初回報告）
+                    if is_manual_trigger:
+                        msg = (
+                            f"【ℹ️ サンライズ空席状況案内】\n"
+                            f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n"
+                            f"[希望設備] {config['target_facility']}\n"
+                            f"==============================="
+                            f"{status_text}"
+                            f"===============================\n"
+                        )
+                        print("    📢 手動起動の初回報告を送信します。")
+                        send_line(msg)
+                        has_reported_status = True
+                    
+                    # 💡 1時間ごとの定期報告
+                    elif is_hourly_report_window:
+                        msg = (
+                            f"【ℹ️ サンライズ定期巡回報告】\n"
+                            f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n\n"
+                            f"（この1時間の間、5秒おきに空席を探しましたが見つかっていません）\n\n"
+                            f"引き続き5秒間隔で常時監視を継続します。"
+                        )
+                        print("    📢 1時間ごとの定期報告を送信します。")
+                        send_line(msg)
+                        has_reported_status = True
+
                 print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
-                time.sleep(wait_sec)
+                time.sleep(5 if not any_vacant else 15)
 
             else:
-                consecutive_failures += 1
-                print(f"    ⚠️ 全列車取得失敗 (連続 {consecutive_failures} 回目)")
-                
-                if consecutive_failures >= 5 and not failure_alerted:
-                    err_msg = (
-                        f"【⚠️ e5489アクセス混雑通知】\n"
-                        f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n\n"
-                        f"e5489の混雑またはエラーにより空席データを取得できませんでした。\n"
-                        f"裏で自動リトライを継続します。"
-                    )
-                    print("    📢 連続失敗のためLINEへ警告通知を送信します。")
-                    send_line(err_msg)
-                    failure_alerted = True
-
-                time.sleep(5)
+                print("    ⚠️ 全列車が揃わなかったため、この回の通知判定をスキップして即リトライします。")
+                time.sleep(3)
 
         context.close()
         browser.close()

@@ -35,3 +35,12 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
         run: python sunrise_hunter.py
+
+      # 📸 エラーや失敗があった場合、撮影されたスクショを自動保存
+      - name: Upload Debug Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
+          if-no-files-found: ignore

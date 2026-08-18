@@ -130,8 +130,10 @@ def parse_mark_from_td(td_element):
     if "残席なし" in html_str: return "×"
     return "--"
 
-def parse_table_data(soup, status: SunRiseStatus):
+def parse_table_data(soup, seto_status: SunRiseStatus, izumo_status: SunRiseStatus):
     tables = soup.find_all("table", class_="train-info-table")
+    current_target = None
+
     for table in tables:
         for tr in table.find_all("tr"):
             train_td = tr.find("td", class_="train-info-table__col-train")
@@ -146,21 +148,29 @@ def parse_table_data(soup, status: SunRiseStatus):
                 b_kitsuyen = parse_mark_from_td(tds[4])
                 a_kinyen = parse_mark_from_td(tds[5])
                 a_kitsuyen = parse_mark_from_td(tds[6])
+
+                # 💡 列車コンテキストの切り替え
+                if "瀬戸" in row_text:
+                    current_target = seto_status
+                elif "出雲" in row_text:
+                    current_target = izumo_status
+
+                target = current_target if current_target else seto_status
                 
                 if "（ソロ）" in row_text:
-                    status.solo = b_kinyen if b_kinyen != "--" else b_kitsuyen
+                    target.solo = b_kinyen if b_kinyen != "--" else b_kitsuyen
                 elif "（シングル）" in row_text:
-                    status.single_kinyen = b_kinyen
-                    status.single_kitsuyen = b_kitsuyen
+                    target.single_kinyen = b_kinyen
+                    target.single_kitsuyen = b_kitsuyen
                 elif "（サツイン）" in row_text or "サンライズツイン" in row_text:
-                    status.sunrise_twin_kinyen = b_kinyen
-                    status.sunrise_twin_kitsuyen = b_kitsuyen
+                    target.sunrise_twin_kinyen = b_kinyen
+                    target.sunrise_twin_kitsuyen = b_kitsuyen
                 elif "サンライズ" in row_text:
-                    status.nobinobi = nobi_mark
-                    status.single_twin_kinyen = b_kinyen
-                    status.single_twin_kitsuyen = b_kitsuyen
-                    status.single_dx_kinyen = a_kinyen
-                    status.single_dx_kitsuyen = a_kitsuyen
+                    target.nobinobi = nobi_mark
+                    target.single_twin_kinyen = b_kinyen
+                    target.single_twin_kitsuyen = b_kitsuyen
+                    target.single_dx_kinyen = a_kinyen
+                    target.single_dx_kitsuyen = a_kitsuyen
 
 def filter_status_by_target(status_dict, target_facility):
     if not target_facility or target_facility.strip() in ["", "全設備", "未選択"]:
@@ -186,9 +196,19 @@ def filter_status_by_target(status_dict, target_facility):
 
     return filtered if filtered else status_dict
 
-def scan_train_once(context, train_name, direct_url, referer_url):
+def save_error_screenshot(page, prefix):
+    try:
+        filename = f"error_{prefix}_{int(time.time())}.png"
+        page.screenshot(path=filename, full_page=True)
+        print(f"        📸 エラー画面を保存しました: {filename}")
+    except:
+        pass
+
+def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin):
+    """💡 1回のリクエストで画面全体の瀬戸・出雲を一撃回収"""
     page = context.new_page()
-    status_obj = SunRiseStatus()
+    seto_obj = SunRiseStatus()
+    izumo_obj = SunRiseStatus()
     
     try:
         page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
@@ -201,16 +221,19 @@ def scan_train_once(context, train_name, direct_url, referer_url):
         
         html_p1 = page.content()
         if is_e5489_error(page.title(), page.url, html_p1):
+            save_error_screenshot(page, "p1_err")
             page.close()
             return None
 
-        parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
+        # 1ページ目パース（ノビノビ、シングルツイン、シングルDX）
+        parse_table_data(BeautifulSoup(html_p1, "html.parser"), seto_obj, izumo_obj)
 
         change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
         try:
             change_btn.wait_for(state="visible", timeout=8000)
             change_btn.evaluate("el => el.click()")
         except Exception:
+            save_error_screenshot(page, "change_btn_fail")
             page.close()
             return None
 
@@ -220,7 +243,7 @@ def scan_train_once(context, train_name, direct_url, referer_url):
                 later_btn.wait_for(state="visible", timeout=5000)
                 later_btn.evaluate("el => el.click()")
                 
-                # 💡 個室テーブル描画を待機
+                # 💡 個室テーブルの描画を確実に待機
                 page.locator("table.train-info-table").first.wait_for(state="visible", timeout=8000)
                 time.sleep(1.0)
                 
@@ -234,24 +257,28 @@ def scan_train_once(context, train_name, direct_url, referer_url):
                         change_btn.evaluate("el => el.click()")
                         continue
                     else:
+                        save_error_screenshot(page, "p2_err")
                         page.close()
                         return None
                 else:
-                    parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
+                    # 2ページ目パース（ソロ、シングル、サンライズツイン）
+                    parse_table_data(BeautifulSoup(html_p2, "html.parser"), seto_obj, izumo_obj)
                     
-                    # 💡 2ページ目のデータが正しく取れているか確認
-                    p2_data = [status_obj.solo, status_obj.single_kinyen, status_obj.single_kitsuyen, status_obj.sunrise_twin_kinyen]
-                    if all(m == "--" for m in p2_data):
-                        page.close()
-                        return None
+                    results = {}
+                    if not is_sanin:
+                        results["特急サンライズ瀬戸"] = seto_obj
+                    if not is_shikoku:
+                        results["特急サンライズ出雲"] = izumo_obj
 
                     page.close()
-                    return status_obj
+                    return results
             except Exception:
+                save_error_screenshot(page, "popup_timeout")
                 page.close()
                 return None
     except Exception as e:
         print(f"        ⚠️ スキャン処理エラー: {e}")
+        save_error_screenshot(page, "critical_err")
         try:
             page.close()
         except:
@@ -271,6 +298,7 @@ def build_direct_url(config, facility_id):
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
     target_date = f"{int(config['year'])}{int(config['month']):02d}{int(config['day']):02d}"
     
+    # 💡 東京発は21:00、三ノ宮は23:50、出雲市等は14:00
     if config["dep"] == "東京":
         hour, minute = ("21", "00")
     elif config["dep"] == "三ノ宮":
@@ -298,6 +326,7 @@ def main():
 
     config = get_target_config()
 
+    # 過去日付チェック
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_midnight = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
@@ -306,28 +335,19 @@ def main():
         sys.exit(0)
 
     dep, arr = config["dep"], config["arr"]
-    target_trains = []
     is_shikoku = any(s in dep or s in arr for s in SHIKOKU_STATIONS)
     is_sanin = any(s in dep or s in arr for s in SANIN_STATIONS)
 
-    if is_shikoku:
-        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
-    elif is_sanin:
-        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
-    else:
-        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
-        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
-
-    train_names_str = " & ".join([t[0] for t in target_trains])
-    print(f"🎯 サンライズハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
-    print(f"    🚄 調査対象: 【{train_names_str}】 | 狙い設備: {config['target_facility']}")
-
+    # 検索用カナコード（併結区間なら瀬戸コード1本で両方取得可能）
+    search_kana = KANA_IZUMO if is_sanin else KANA_SETO
+    direct_url = build_direct_url(config, search_kana)
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
-    
-    # 💡 1時間ごとの定期報告判定（毎時0分〜4分の定期実行時）
+
+    print(f"🎯 サンライズハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
+    print(f"    狙い設備: {config['target_facility']} | トリガー種別: {GITHUB_EVENT}")
+
     is_hourly_report_window = (now_jst.minute < 5) and (GITHUB_EVENT == "schedule")
     is_manual_trigger = (GITHUB_EVENT in ["workflow_dispatch", "repository_dispatch"])
-    
     has_reported_status = False
 
     with sync_playwright() as p:
@@ -338,33 +358,24 @@ def main():
         )
 
         for loop_cnt in range(25):
-            print(f"\n🔍 [巡回 {loop_cnt+1}/25 回目] スキャン開始...")
-            all_train_results = {}
+            print(f"\n🔍 [巡回 {loop_cnt+1}/25 回目] 一撃スキャン開始...")
+            raw_results = scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
 
-            for train_name, kana_code in target_trains:
-                direct_url = build_direct_url(config, kana_code)
-                status_obj = scan_train_once(context, train_name, direct_url, referer_url)
-                if status_obj:
-                    filtered = filter_status_by_target(status_obj.to_dict(), config["target_facility"])
-                    all_train_results[train_name] = filtered
-                    print(f"    📊 {train_name}: {filtered}")
-                else:
-                    print(f"    ⚠️ {train_name} の取得失敗")
-
-            # 💡 併結区間も含め、対象全列車が100%揃った場合のみ判定
-            if len(all_train_results) == len(target_trains):
+            if raw_results:
                 any_vacant = False
                 status_text = ""
 
-                for t_name, f_dict in all_train_results.items():
+                for t_name, s_obj in raw_results.items():
+                    f_dict = filter_status_by_target(s_obj.to_dict(), config["target_facility"])
                     status_text += f"\n🚆【{t_name}】\n"
+                    print(f"    📊 {t_name}: {f_dict}")
                     for r_name, mark in f_dict.items():
                         alert = " 🎉空席!!" if mark in ["○", "△", "◇"] else ""
                         if alert: any_vacant = True
                         status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
 
                 if any_vacant:
-                    # 🚨 空席が出た瞬間は即座に通知
+                    # 🚨 空席が出た瞬間は即座に速報通知！
                     msg = (
                         f"【🚨 サンライズ空席速報！！】\n"
                         f"お目当てのキャンセル空席が出ました！\n\n"
@@ -379,7 +390,7 @@ def main():
                     time.sleep(15)
 
                 elif not has_reported_status:
-                    # 💡 手動起動時（初回報告）
+                    # 💡 手動・GAS起動時の初回現状報告
                     if is_manual_trigger:
                         msg = (
                             f"【ℹ️ サンライズ空席状況案内】\n"
@@ -392,7 +403,7 @@ def main():
                         print("    📢 手動起動の初回報告を送信します。")
                         send_line(msg)
                         has_reported_status = True
-                    
+
                     # 💡 1時間ごとの定期報告
                     elif is_hourly_report_window:
                         msg = (
@@ -405,11 +416,12 @@ def main():
                         send_line(msg)
                         has_reported_status = True
 
+                # 💡 満席時はMAX頻度（5秒待機）
                 print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
                 time.sleep(5 if not any_vacant else 15)
 
             else:
-                print("    ⚠️ 全列車が揃わなかったため、この回の通知判定をスキップして即リトライします。")
+                print("    ⚠️ スキャン失敗。即座にリトライします。")
                 time.sleep(3)
 
         context.close()

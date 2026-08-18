@@ -2,20 +2,25 @@ import os
 import sys
 import csv
 import time
-import random
 import requests
-import traceback
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-# ⚙️ 環境変数の読み込み
+# ⚙️ 環境変数
 CSV_URL = os.environ.get("CONFIG_CSV_URL")
 LINE_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER = os.environ.get("LINE_USER_ID")
 LINE_GROUP = os.environ.get("LINE_GROUP_ID")
+
+# 列車カナコード (CP932)
+KANA_SETO = "%BB%BE%C4%20%20000"     # ｻﾝﾗｲｽﾞｾﾄ
+KANA_IZUMO = "%BB%B2%BD%D3%20%20000" # ｻﾝﾗｲｽﾞｲﾂﾞﾓ
+
+SHIKOKU_STATIONS = ["高松", "坂出", "児島"]
+SANIN_STATIONS = ["出雲市", "宍道", "松江", "安来", "米子", "新見", "備中高梁", "伯耆大山"]
 
 @dataclass
 class SunRiseStatus:
@@ -46,31 +51,20 @@ class SunRiseStatus:
 
 def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {
-        "Authorization": f"Bearer {LINE_TOKEN}", 
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"}
+    targets = [t.strip() for t in [LINE_USER, LINE_GROUP] if t and t.strip()]
     
-    targets = []
-    if LINE_USER and LINE_USER.strip():
-        targets.append(LINE_USER.strip())
-    if LINE_GROUP and LINE_GROUP.strip():
-        targets.append(LINE_GROUP.strip())
-
     if not targets:
-        print("❌ LINE送信エラー: 有効な USER_ID も GROUP_ID も設定されていません。")
+        print("❌ LINE送信エラー: LINE_USER_ID / LINE_GROUP_ID が設定されていません。")
         return
 
     for to_id in targets:
-        payload = {
-            "to": to_id, 
-            "messages": [{"type": "text", "text": message}]
-        }
+        payload = {"to": to_id, "messages": [{"type": "text", "text": message}]}
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=10)
-            print(f"📢 LINE APIレスポンス (宛先: {to_id}): ステータス {res.status_code}")
+            print(f"📢 LINE送信結果 (宛先: {to_id}): ステータス {res.status_code}")
         except Exception as e:
-            print(f"❌ LINE送信例外 (宛先: {to_id}): {e}")
+            print(f"❌ LINE送信例外: {e}")
 
 def get_target_config():
     try:
@@ -82,11 +76,26 @@ def get_target_config():
             print("⚠️ スプレッドシートにデータがありません。")
             sys.exit(0)
         latest = reader[-1]
-        raw_date = latest[1].replace("/", "-")
-        dt = datetime.strptime(raw_date, "%Y-%m-%d")
+        raw_date = latest[1].replace("/", "-").strip()
+        
+        # 💡 日付フォーマットの柔軟なパース (YYYY-M-D or M-D)
+        parts = raw_date.split("-")
+        jst = timezone(timedelta(hours=9))
+        now_jst = datetime.now(jst)
+        
+        if len(parts) == 3:
+            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            year, month, day = now_jst.year, int(parts[0]), int(parts[1])
+        else:
+            raise ValueError(f"不正な日付形式: {raw_date}")
+
+        target_facility = latest[4].strip() if len(latest) > 4 and latest[4].strip() else "全設備"
+
         return {
-            "year": str(dt.year), "month": str(dt.month), "day": str(dt.day),
-            "dep": latest[2].strip(), "arr": latest[3].strip()
+            "year": str(year), "month": str(month), "day": str(day),
+            "dep": latest[2].strip(), "arr": latest[3].strip(),
+            "target_facility": target_facility
         }
     except Exception as e:
         print(f"CSV読み込み失敗: {e}")
@@ -105,7 +114,7 @@ def is_e5489_error(page_title, page_url, html_content):
             return True
         if any(k in page_url for k in ["/Error/", "/Guide/", "/Message/"]):
             return True
-        error_keywords = ["20100801", "99990110", "00604087", "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております"]
+        error_keywords = ["20100801", "99990110", "00604087", "処理中にエラーが発生しました", "混雑中ですが", "大変混み合っております", "該当する列車"]
         return any(k in html_content for k in error_keywords)
     except:
         return True
@@ -118,10 +127,6 @@ def parse_mark_from_td(td_element):
     if "事前申込" in html_str: return "◇"
     if "残席なし" in html_str: return "×"
     return "--"
-
-def is_data_acquired(status: SunRiseStatus, target_keys: list):
-    current_data = status.to_dict()
-    return any(current_data[k] != "--" for k in target_keys)
 
 def parse_table_data(soup, status: SunRiseStatus):
     tables = soup.find_all("table", class_="train-info-table")
@@ -140,13 +145,7 @@ def parse_table_data(soup, status: SunRiseStatus):
                 a_kinyen = parse_mark_from_td(tds[5])
                 a_kitsuyen = parse_mark_from_td(tds[6])
                 
-                if row_text == "特急サンライズ瀬戸":
-                    status.nobinobi = nobi_mark
-                    status.single_twin_kinyen = b_kinyen
-                    status.single_twin_kitsuyen = b_kitsuyen
-                    status.single_dx_kinyen = a_kinyen
-                    status.single_dx_kitsuyen = a_kitsuyen
-                elif "（ソロ）" in row_text:
+                if "（ソロ）" in row_text:
                     status.solo = b_kinyen if b_kinyen != "--" else b_kitsuyen
                 elif "（シングル）" in row_text:
                     status.single_kinyen = b_kinyen
@@ -154,39 +153,138 @@ def parse_table_data(soup, status: SunRiseStatus):
                 elif "（サツイン）" in row_text or "サンライズツイン" in row_text:
                     status.sunrise_twin_kinyen = b_kinyen
                     status.sunrise_twin_kitsuyen = b_kitsuyen
+                elif "サンライズ" in row_text:
+                    status.nobinobi = nobi_mark
+                    status.single_twin_kinyen = b_kinyen
+                    status.single_twin_kitsuyen = b_kitsuyen
+                    status.single_dx_kinyen = a_kinyen
+                    status.single_dx_kitsuyen = a_kitsuyen
 
-def save_debug_files(page, attempt_num, state=""):
+def filter_status_by_target(status_dict, target_facility):
+    if not target_facility or target_facility.strip() in ["", "全設備", "未選択"]:
+        return status_dict
+    
+    targets = [t.strip() for t in target_facility.replace("、", ",").split(",") if t.strip()]
+    if not targets:
+        return status_dict
+
+    filtered = {}
+    for key, val in status_dict.items():
+        matched = False
+        for t in targets:
+            if ("ノビノビ" in t) and ("ノビノビ" in key): matched = True
+            elif (t == "ソロ") and ("ソロ" in key): matched = True
+            elif ("シングルツイン" in t) and ("シングルツイン" in key): matched = True
+            elif ("シングルデラックス" in t) and ("シングルデラックス" in key): matched = True
+            elif ("サンライズツイン" in t) and ("サンライズツイン" in key): matched = True
+            elif (t == "シングル") and ("シングル" in key) and ("シングルツイン" not in key) and ("シングルデラックス" not in key): matched = True
+
+        if matched:
+            filtered[key] = val
+
+    return filtered if filtered else status_dict
+
+def save_error_screenshot(page, prefix):
+    """📸 エラー発生時の画面を保存"""
     try:
-        base_path = f"debug_attempt_{attempt_num}_{state}"
-        page.screenshot(path=f"{base_path}.png", full_page=True)
-        with open(f"{base_path}.html", "w", encoding="utf-8") as f:
-            f.write(page.content())
+        filename = f"error_{prefix}_{int(time.time())}.png"
+        page.screenshot(path=filename, full_page=True)
+        print(f"        📸 エラー画面を保存しました: {filename}")
     except:
         pass
 
-def main():
-    if not is_within_active_hours():
-        print("💤 現在は稼働時間外のため即時終了します。")
-        return
-
-    config = get_target_config()
+def scan_train_once(context, train_name, direct_url, referer_url):
+    page = context.new_page()
+    status_obj = SunRiseStatus()
+    clean_name = "seto" if "瀬戸" in train_name else "izumo"
     
-    jst = timezone(timedelta(hours=9))
-    now_jst = datetime.now(jst)
-    target_dt = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
-    if target_dt < now_jst:
-        print(f"⚠️ 【自動停止】指定された乗車日は過去の日付です。")
-        sys.exit(0)
+    try:
+        page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
+        page.goto(direct_url, referer=referer_url, timeout=15000)
+        
+        try:
+            page.locator("table.train-info-table").first.wait_for(timeout=8000, state="visible")
+        except:
+            pass
+        
+        html_p1 = page.content()
+        if is_e5489_error(page.title(), page.url, html_p1):
+            print(f"        ⚠️ 1ページ目でe5489混雑・エラー検知 ({train_name})")
+            save_error_screenshot(page, f"{clean_name}_p1_err")
+            page.close()
+            return None
 
-    print(f"🎯 Wスキャン開始: {config['year']}年{config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}")
+        parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
 
+        change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
+        try:
+            change_btn.wait_for(state="visible", timeout=8000)
+            change_btn.evaluate("el => el.click()")  # 💡 JS強制クリック
+        except Exception as e:
+            print(f"        ⚠️ 「この列車を変更」ボタン押下失敗: {e}")
+            save_error_screenshot(page, f"{clean_name}_change_btn_fail")
+            page.close()
+            return None
+
+        for inner_attempt in range(10):
+            try:
+                later_btn = page.locator("text=後の列車").first
+                later_btn.wait_for(state="visible", timeout=5000)
+                later_btn.evaluate("el => el.click()")  # 💡 JS強制クリックで確実に突破！
+                
+                page.wait_for_load_state("networkidle", timeout=8000)
+                time.sleep(0.5)
+                
+                html_p2 = page.content()
+                if is_e5489_error(page.title(), page.url, html_p2):
+                    back_btn = page.locator("a:has-text('前のページに戻る')").first
+                    if back_btn.is_visible():
+                        back_btn.evaluate("el => el.click()")
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                        change_btn.wait_for(state="visible", timeout=8000)
+                        change_btn.evaluate("el => el.click()")
+                        continue
+                    else:
+                        save_error_screenshot(page, f"{clean_name}_p2_err")
+                        page.close()
+                        return None
+                else:
+                    parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
+                    page.close()
+                    return status_obj
+            except Exception as e:
+                save_error_screenshot(page, f"{clean_name}_popup_timeout")
+                page.close()
+                return None
+    except Exception as e:
+        print(f"        ⚠️ スキャン処理エラー: {e}")
+        save_error_screenshot(page, f"{clean_name}_critical_err")
+        try:
+            page.close()
+        except:
+            pass
+        return None
+
+    try:
+        page.close()
+    except:
+        pass
+    return None
+
+def build_direct_url(config, facility_id):
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
     encoded_dep = urllib.parse.quote(dep_st.encode("cp932"))
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
-    facility_id = "%BB%BE%C4%20%20000" if "高松" in dep_st or "高松" in arr_st else "%BB%B2%BD%D3%20%20000"
-    target_date = f"{config['year']}{int(config['month']):02d}{int(config['day']):02d}"
-    hour, minute = ("23", "50") if config["dep"] == "三ノ宮" else ("18", "00")
+    target_date = f"{int(config['year'])}{int(config['month']):02d}{int(config['day']):02d}"
+    
+    # 💡 東京発下りは21:00以降、三ノ宮は23:50、その他は18:00
+    if config["dep"] == "東京":
+        hour, minute = ("21", "00")
+    elif config["dep"] == "三ノ宮":
+        hour, minute = ("23", "50")
+    else:
+        hour, minute = ("18", "00")
 
     param = (
         f"inputDepartStName={encoded_dep}&inputArriveStName={encoded_arr}&inputType=0"
@@ -199,144 +297,127 @@ def main():
         f"&inputReturnUrl=goyoyaku/campaign/sunriseseto_izumo/form.html"
         f"&RTURL=https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
     )
-    direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
-    referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
+    return f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
 
-    max_attempts = 30
-    full_scan_success = False
-    status_obj = SunRiseStatus()
+def main():
+    if not is_within_active_hours():
+        print("💤 現在は稼働時間外のため即時終了します。")
+        return
+
+    config = get_target_config()
+
+    # 💡 過去日付チェック（GitHub時間節約）
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst)
+    target_midnight = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
+    if target_midnight < now_jst:
+        print(f"🛑 指定された乗車日（{config['month']}月{config['day']}日）は過去のため即時終了します。")
+        sys.exit(0)
+
+    dep, arr = config["dep"], config["arr"]
+    target_trains = []
+    is_shikoku = any(s in dep or s in arr for s in SHIKOKU_STATIONS)
+    is_sanin = any(s in dep or s in arr for s in SANIN_STATIONS)
+
+    if is_shikoku:
+        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
+    elif is_sanin:
+        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
+    else:
+        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
+        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
+
+    train_names_str = " & ".join([t[0] for t in target_trains])
+    print(f"🎯 サンライズハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
+    print(f"    🚄 調査対象: 【{train_names_str}】 | 狙い設備: {config['target_facility']}")
+
+    referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
+    
+    last_notified_status = None
+    consecutive_failures = 0
+    failure_alerted = False
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
 
-        try:
-            for attempt in range(max_attempts):
-                if not is_within_active_hours():
-                    return
-                current_attempt_num = attempt + 1
-                if attempt > 0:
-                    time.sleep(random.uniform(0.5, 1.5))
+        for loop_cnt in range(25):  # 約3〜4分間巡回
+            print(f"\n🔍 [巡回 {loop_cnt+1}/25 回目] スキャン開始...")
+            all_train_results = {}
 
-                print(f"💻 【PC標準窓】超速アタック {current_attempt_num} / {max_attempts} 回目...")
-                context = browser.new_context(
-                    viewport={"width": 1280, "height": 800},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
+            for train_name, kana_code in target_trains:
+                direct_url = build_direct_url(config, kana_code)
+                status_obj = scan_train_once(context, train_name, direct_url, referer_url)
+                if status_obj:
+                    filtered = filter_status_by_target(status_obj.to_dict(), config["target_facility"])
+                    all_train_results[train_name] = filtered
+                    print(f"    📊 {train_name}: {filtered}")
+                else:
+                    print(f"    ⚠️ {train_name} の取得失敗")
+
+            if all_train_results:
+                consecutive_failures = 0
                 
-                try:
-                    page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
-                    page.goto(direct_url, referer=referer_url, timeout=15000)
-                    
-                    try:
-                        page.locator("table.train-info-table").first.wait_for(timeout=10000, state="visible")
-                    except:
-                        pass
-                    
-                    html_p1 = page.content()
-                    if is_e5489_error(page.title(), page.url, html_p1):
-                        print(f"    ⚠️ [混雑・エラー検知] 1ページ目で弾かれました。")
-                        save_debug_files(page, current_attempt_num, "err_p1")
-                        continue
+                current_status_str = ""
+                any_vacant = False
+                status_text = ""
 
-                    print("    📸 [STATE: PAGE1_SCAN] 1ページ目のデータを回収...")
-                    parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
+                for t_name, f_dict in all_train_results.items():
+                    status_text += f"\n🚆【{t_name}】\n"
+                    current_status_str += f"[{t_name}]"
+                    for r_name, mark in f_dict.items():
+                        alert = " 🎉空席!!" if mark in ["○", "△", "◇"] else ""
+                        if alert: any_vacant = True
+                        status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
+                        current_status_str += f"{r_name}:{mark}|"
 
-                    change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
-                    try:
-                        change_btn.wait_for(state="visible", timeout=10000)
-                        print("    👉 『この列車を変更』をクリックします...")
-                        change_btn.click(timeout=5000)
-                    except:
-                        raise Exception("「この列車を変更」ボタンが見つかりませんでした。")
-                        
-                    inner_success = False
-                    for inner_attempt in range(100):
-                        try:
-                            later_btn = page.locator("text=後の列車").first
-                            later_btn.wait_for(state="visible", timeout=5000)
-                            print(f"    👉 ポップアップ内の『後の列車』をクリック（内部連打 {inner_attempt+1}/100）...")
-                            later_btn.click(timeout=5000)
-                            
-                            page.wait_for_load_state("networkidle", timeout=10000)
-                            time.sleep(1)
-                            
-                            html_p2 = page.content()
-                            
-                            if is_e5489_error(page.title(), page.url, html_p2):
-                                print("    ⚠️ 混雑エラー発生！即座に『前のページに戻る』を押してリトライします。")
-                                back_btn = page.locator("a:has-text('前のページに戻る')").first
-                                if back_btn.is_visible():
-                                    back_btn.click(timeout=5000)
-                                    page.wait_for_load_state("networkidle", timeout=10000)
-                                    change_btn.wait_for(state="visible", timeout=10000)
-                                    change_btn.click(timeout=5000)
-                                    continue
-                                else:
-                                    break
-                            else:
-                                inner_success = True
-                                break
-                        except Exception as e:
-                            print(f"    ⚠️ ポップアップ操作でタイムアウト: {e}")
-                            break
-                            
-                    if inner_success:
-                        print("    📸 [STATE: PAGE2_SCAN] 2ページ目（個室一覧）の解析開始...")
-                        parse_table_data(BeautifulSoup(page.content(), "html.parser"), status_obj)
-                        
-                        p2_keys = ["ソロ禁煙", "シングル禁煙", "シングル喫煙", "サンライズツイン禁煙", "サンライズツイン喫煙"]
-                        if not is_data_acquired(status_obj, p2_keys):
-                            raise Exception("ソロやシングルのデータが1件も取得できませんでした。")
+                # 💡 初回は満席でも必ずLINE通知、2回目以降は変化時のみ
+                is_first_run = (last_notified_status is None)
+                has_changed = (current_status_str != last_notified_status)
 
-                        print("    🎉 [STATE: SUCCESS] 全設備の完全踏破とデータ取得に成功！")
-                        save_debug_files(page, current_attempt_num, "success")
-                        full_scan_success = True
-                        break
-                        
-                except Exception as attempt_err:
-                    print("==================================================")
-                    print(f"❌ アタック {current_attempt_num} 回目でエラー/検証失敗が発生しました。")
-                    print(f"内容: {attempt_err}")
-                    print("==================================================")
-                    save_debug_files(page, current_attempt_num, "fail")
-                finally:
-                    context.close()
+                if is_first_run or has_changed:
+                    title = "【🚨 サンライズ空席速報！！】" if any_vacant else "【ℹ️ サンライズ空席状況案内】"
+                    msg = (
+                        f"{title}\n"
+                        f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n"
+                        f"[希望設備] {config['target_facility']}\n"
+                        f"==============================="
+                        f"{status_text}"
+                        f"===============================\n"
+                    )
+                    log_label = "初回現状報告" if is_first_run else "状態変化検知"
+                    print(f"    📢 [{log_label}] LINE通知を送信します！")
+                    send_line(msg)
+                    last_notified_status = current_status_str
 
-            if not full_scan_success:
-                print("\n❌ 規定回数内で全設備の正確なデータ取得に到達できませんでした。")
-                sys.exit(1)
+                # 💡 満席なら超高頻度5秒、空席ありなら15秒待機
+                wait_sec = 15 if any_vacant else 5
+                print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
+                time.sleep(wait_sec)
 
-            any_vacant = False
-            status_text = ""
-            for room_name, mark in status_obj.to_dict().items():
-                alert = " 🎉空席!!" if mark in ["○", "△", "◇"] else ""
-                if alert: any_vacant = True
-                status_text += f"・{room_name} ➡️ [ {mark} ]{alert}\n"
+            else:
+                consecutive_failures += 1
+                print(f"    ⚠️ 全列車取得失敗 (連続 {consecutive_failures} 回目)")
+                
+                # 💡 連続5回失敗したらLINE通知（1実行につき1回）
+                if consecutive_failures >= 5 and not failure_alerted:
+                    err_msg = (
+                        f"【⚠️ e5489アクセス混雑通知】\n"
+                        f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n\n"
+                        f"e5489の混雑またはエラーにより空席データを取得できませんでした。\n"
+                        f"裏で自動リトライを継続します。"
+                    )
+                    print("    📢 連続失敗のためLINEへ警告通知を送信します。")
+                    send_line(err_msg)
+                    failure_alerted = True
 
-            if any_vacant:
-                msg = (
-                    f"【🚨 サンライズ空席速報！！】\n"
-                    f"お目当てのキャンセルが放流されました！\n\n"
-                    f"[乗車日(始発駅基準)] {config['month']}月{config['day']}日\n"
-                    f"[区間] {config['dep']} ➡️ {config['arr']}\n\n"
-                    f"🔥 現在の全設備ステータス:\n"
-                    f"===============================\n"
-                    f"{status_text}"
-                    f"===============================\n"
-                )
-                print(f"🎉 厳密な検証を通過し空席を検知！LINEへ通知します。")
-                send_line(msg)
-                return 
+                time.sleep(5)
 
-            print("\n📭 Wスキャンに完全成功！現時点ではすべて本当に「満席」でした。")
-
-        except Exception as e:
-            print(f"❌ 予期せぬクリティカルエラー発生: {e}")
-            traceback.print_exc()
-            sys.exit(1)
-        finally:
-            browser.close()
+        context.close()
+        browser.close()
 
 if __name__ == "__main__":
     main()

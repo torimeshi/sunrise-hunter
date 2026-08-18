@@ -52,7 +52,10 @@ class SunRiseStatus:
 def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"}
-    targets = [t.strip() for t in [LINE_USER, LINE_GROUP] if t and t.strip()]
+    
+    # 💡 重複宛先を排除して1通のみ送信
+    raw_targets = [LINE_USER, LINE_GROUP]
+    targets = list(dict.fromkeys([t.strip() for t in raw_targets if t and t.strip()]))
     
     if not targets:
         print("❌ LINE送信エラー: LINE_USER_ID / LINE_GROUP_ID が設定されていません。")
@@ -78,7 +81,6 @@ def get_target_config():
         latest = reader[-1]
         raw_date = latest[1].replace("/", "-").strip()
         
-        # 💡 日付フォーマットの柔軟なパース (YYYY-M-D or M-D)
         parts = raw_date.split("-")
         jst = timezone(timedelta(hours=9))
         now_jst = datetime.now(jst)
@@ -185,7 +187,6 @@ def filter_status_by_target(status_dict, target_facility):
     return filtered if filtered else status_dict
 
 def save_error_screenshot(page, prefix):
-    """📸 エラー発生時の画面を保存"""
     try:
         filename = f"error_{prefix}_{int(time.time())}.png"
         page.screenshot(path=filename, full_page=True)
@@ -219,7 +220,7 @@ def scan_train_once(context, train_name, direct_url, referer_url):
         change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
         try:
             change_btn.wait_for(state="visible", timeout=8000)
-            change_btn.evaluate("el => el.click()")  # 💡 JS強制クリック
+            change_btn.evaluate("el => el.click()")
         except Exception as e:
             print(f"        ⚠️ 「この列車を変更」ボタン押下失敗: {e}")
             save_error_screenshot(page, f"{clean_name}_change_btn_fail")
@@ -230,17 +231,17 @@ def scan_train_once(context, train_name, direct_url, referer_url):
             try:
                 later_btn = page.locator("text=後の列車").first
                 later_btn.wait_for(state="visible", timeout=5000)
-                later_btn.evaluate("el => el.click()")  # 💡 JS強制クリックで確実に突破！
+                later_btn.evaluate("el => el.click()")
                 
-                page.wait_for_load_state("networkidle", timeout=8000)
-                time.sleep(0.5)
+                # 💡 networkidleを撤廃し、描画完了を1.5秒待機
+                time.sleep(1.5)
                 
                 html_p2 = page.content()
                 if is_e5489_error(page.title(), page.url, html_p2):
                     back_btn = page.locator("a:has-text('前のページに戻る')").first
                     if back_btn.is_visible():
                         back_btn.evaluate("el => el.click()")
-                        page.wait_for_load_state("networkidle", timeout=8000)
+                        time.sleep(1.0)
                         change_btn.wait_for(state="visible", timeout=8000)
                         change_btn.evaluate("el => el.click()")
                         continue
@@ -278,13 +279,13 @@ def build_direct_url(config, facility_id):
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
     target_date = f"{int(config['year'])}{int(config['month']):02d}{int(config['day']):02d}"
     
-    # 💡 東京発下りは21:00以降、三ノ宮は23:50、その他は18:00
+    # 💡 出雲92号（14:37発）と定期便（18:57発）の両方に対応
     if config["dep"] == "東京":
         hour, minute = ("21", "00")
     elif config["dep"] == "三ノ宮":
         hour, minute = ("23", "50")
     else:
-        hour, minute = ("18", "00")
+        hour, minute = ("14", "00")
 
     param = (
         f"inputDepartStName={encoded_dep}&inputArriveStName={encoded_arr}&inputType=0"
@@ -306,7 +307,6 @@ def main():
 
     config = get_target_config()
 
-    # 💡 過去日付チェック（GitHub時間節約）
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_midnight = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
@@ -344,7 +344,7 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
 
-        for loop_cnt in range(25):  # 約3〜4分間巡回
+        for loop_cnt in range(25):
             print(f"\n🔍 [巡回 {loop_cnt+1}/25 回目] スキャン開始...")
             all_train_results = {}
 
@@ -374,7 +374,6 @@ def main():
                         status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
                         current_status_str += f"{r_name}:{mark}|"
 
-                # 💡 初回は満席でも必ずLINE通知、2回目以降は変化時のみ
                 is_first_run = (last_notified_status is None)
                 has_changed = (current_status_str != last_notified_status)
 
@@ -393,7 +392,6 @@ def main():
                     send_line(msg)
                     last_notified_status = current_status_str
 
-                # 💡 満席なら超高頻度5秒、空席ありなら15秒待機
                 wait_sec = 15 if any_vacant else 5
                 print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
                 time.sleep(wait_sec)
@@ -402,7 +400,6 @@ def main():
                 consecutive_failures += 1
                 print(f"    ⚠️ 全列車取得失敗 (連続 {consecutive_failures} 回目)")
                 
-                # 💡 連続5回失敗したらLINE通知（1実行につき1回）
                 if consecutive_failures >= 5 and not failure_alerted:
                     err_msg = (
                         f"【⚠️ e5489アクセス混雑通知】\n"

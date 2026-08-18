@@ -16,6 +16,14 @@ LINE_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER = os.environ.get("LINE_USER_ID")
 LINE_GROUP = os.environ.get("LINE_GROUP_ID")
 
+# 列車カナコード (CP932)
+KANA_SETO = "%BB%BE%C4%20%20000"     # ｻﾝﾗｲｽﾞｾﾄ
+KANA_IZUMO = "%BB%B2%BD%D3%20%20000" # ｻﾝﾗｲｽﾞｲﾂﾞﾓ
+
+# 四国・山陰の固有駅
+SHIKOKU_STATIONS = ["高松", "坂出", "児島"]
+SANIN_STATIONS = ["出雲市", "宍道", "松江", "安来", "米子", "新見", "備中高梁", "伯耆大山"]
+
 @dataclass
 class SunRiseStatus:
     nobinobi: str = "--"
@@ -52,7 +60,7 @@ def send_line(message):
         payload = {"to": to_id, "messages": [{"type": "text", "text": message}]}
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=10)
-            print(f"📢 LINE送信 (宛先: {to_id}): ステータス {res.status_code}")
+            print(f"📢 LINE送信結果 (宛先: {to_id}): ステータス {res.status_code}")
         except Exception as e:
             print(f"❌ LINE送信エラー: {e}")
 
@@ -70,13 +78,11 @@ def get_target_config():
         dt = datetime.strptime(raw_date, "%Y-%m-%d")
         
         target_facility = latest[4].strip() if len(latest) > 4 and latest[4].strip() else "全設備"
-        last_status_str = latest[5].strip() if len(latest) > 5 else "RESET"
 
         return {
             "year": str(dt.year), "month": str(dt.month), "day": str(dt.day),
             "dep": latest[2].strip(), "arr": latest[3].strip(),
-            "target_facility": target_facility,
-            "last_status_str": last_status_str
+            "target_facility": target_facility
         }
     except Exception as e:
         print(f"CSV読み込み失敗: {e}")
@@ -126,13 +132,7 @@ def parse_table_data(soup, status: SunRiseStatus):
                 a_kinyen = parse_mark_from_td(tds[5])
                 a_kitsuyen = parse_mark_from_td(tds[6])
                 
-                if row_text == "特急サンライズ瀬戸":
-                    status.nobinobi = nobi_mark
-                    status.single_twin_kinyen = b_kinyen
-                    status.single_twin_kitsuyen = b_kitsuyen
-                    status.single_dx_kinyen = a_kinyen
-                    status.single_dx_kitsuyen = a_kitsuyen
-                elif "（ソロ）" in row_text:
+                if "（ソロ）" in row_text:
                     status.solo = b_kinyen if b_kinyen != "--" else b_kitsuyen
                 elif "（シングル）" in row_text:
                     status.single_kinyen = b_kinyen
@@ -140,6 +140,12 @@ def parse_table_data(soup, status: SunRiseStatus):
                 elif "（サツイン）" in row_text or "サンライズツイン" in row_text:
                     status.sunrise_twin_kinyen = b_kinyen
                     status.sunrise_twin_kitsuyen = b_kitsuyen
+                elif "サンライズ" in row_text:
+                    status.nobinobi = nobi_mark
+                    status.single_twin_kinyen = b_kinyen
+                    status.single_twin_kitsuyen = b_kitsuyen
+                    status.single_dx_kinyen = a_kinyen
+                    status.single_dx_kitsuyen = a_kitsuyen
 
 def filter_status_by_target(status_dict, target_facility):
     if not target_facility or target_facility.strip() in ["", "全設備", "未選択"]:
@@ -165,7 +171,9 @@ def filter_status_by_target(status_dict, target_facility):
 
     return filtered if filtered else status_dict
 
-def scan_once(page, direct_url, referer_url, status_obj):
+def scan_train_once(context, direct_url, referer_url):
+    page = context.new_page()
+    status_obj = SunRiseStatus()
     try:
         page.goto("https://e5489.jr-odekake.net/e5489/cspc/CBTopMenuPC", timeout=15000)
         page.goto(direct_url, referer=referer_url, timeout=15000)
@@ -177,14 +185,20 @@ def scan_once(page, direct_url, referer_url, status_obj):
         
         html_p1 = page.content()
         if is_e5489_error(page.title(), page.url, html_p1):
-            return False
+            print("        ⚠️ 1ページ目で混雑検知")
+            page.close()
+            return None
 
         parse_table_data(BeautifulSoup(html_p1, "html.parser"), status_obj)
 
         change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
-        if not change_btn.is_visible():
-            return False
-        change_btn.click(timeout=5000)
+        try:
+            change_btn.wait_for(state="visible", timeout=10000)
+            change_btn.click(timeout=5000)
+        except Exception as e:
+            print(f"        ⚠️ 「この列車を変更」ボタン待機失敗: {e}")
+            page.close()
+            return None
 
         for inner_attempt in range(15):
             try:
@@ -200,33 +214,38 @@ def scan_once(page, direct_url, referer_url, status_obj):
                     if back_btn.is_visible():
                         back_btn.click(timeout=5000)
                         page.wait_for_load_state("networkidle", timeout=10000)
+                        change_btn.wait_for(state="visible", timeout=10000)
                         change_btn.click(timeout=5000)
                         continue
                     else:
-                        return False
+                        page.close()
+                        return None
                 else:
                     parse_table_data(BeautifulSoup(html_p2, "html.parser"), status_obj)
-                    return True
+                    page.close()
+                    return status_obj
             except:
-                return False
+                page.close()
+                return None
     except Exception as e:
-        print(f"    ⚠️ スキャン中にエラーが発生: {e}")
-        return False
-    return False
+        print(f"        ⚠️ スキャン処理エラー: {e}")
+        try:
+            page.close()
+        except:
+            pass
+        return None
 
-def main():
-    if not is_within_active_hours():
-        print("💤 現在は稼働時間外のため即時終了します。")
-        return
+    try:
+        page.close()
+    except:
+        pass
+    return None
 
-    config = get_target_config()
-    print(f"🎯 厳密フィルタ搭載ハンター起動: {config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']} | 狙い: {config['target_facility']}")
-
+def build_direct_url(config, facility_id):
     dep_st = "高松（香川県）" if config["dep"] == "高松" else config["dep"]
     arr_st = "高松（香川県）" if config["arr"] == "高松" else config["arr"]
     encoded_dep = urllib.parse.quote(dep_st.encode("cp932"))
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
-    facility_id = "%BB%BE%C4%20%20000" if "高松" in dep_st or "高松" in arr_st else "%BB%B2%BD%D3%20%20000"
     target_date = f"{config['year']}{int(config['month']):02d}{int(config['day']):02d}"
     hour, minute = ("23", "50") if config["dep"] == "三ノ宮" else ("18", "00")
 
@@ -241,8 +260,35 @@ def main():
         f"&inputReturnUrl=goyoyaku/campaign/sunriseseto_izumo/form.html"
         f"&RTURL=https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
     )
-    direct_url = f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
+    return f"https://e5489.jr-odekake.net/e5489/cspc/CBDayTimeArriveSelRsvMyDiaPC?{param}"
+
+def main():
+    if not is_within_active_hours():
+        print("💤 現在は稼働時間外のため即時終了します。")
+        return
+
+    config = get_target_config()
+    dep, arr = config["dep"], config["arr"]
+
+    target_trains = []
+    is_shikoku = any(s in dep or s in arr for s in SHIKOKU_STATIONS)
+    is_sanin = any(s in dep or s in arr for s in SANIN_STATIONS)
+
+    if is_shikoku:
+        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
+    elif is_sanin:
+        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
+    else:
+        target_trains.append(("特急サンライズ瀬戸", KANA_SETO))
+        target_trains.append(("特急サンライズ出雲", KANA_IZUMO))
+
+    train_names_str = " & ".join([t[0] for t in target_trains])
+    print(f"🎯 併結対応ハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
+    print(f"    🚄 調査対象: 【{train_names_str}】 | 狙い設備: {config['target_facility']}")
+
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
+
+    last_notified_status = None  # この実行内で直前に通知した状態
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -250,52 +296,65 @@ def main():
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-        page = context.new_page()
 
         for loop_cnt in range(10):
-            print(f"\n🔍 [巡回 {loop_cnt+1}/10 回目] e5489へアクセス中...")
-            status_obj = SunRiseStatus()
-            success = scan_once(page, direct_url, referer_url, status_obj)
+            print(f"\n🔍 [巡回 {loop_cnt+1}/10 回目] スキャン開始...")
+            all_train_results = {}
+            total_success = True
 
-            if success:
-                all_status = status_obj.to_dict()
-                target_status = filter_status_by_target(all_status, config["target_facility"])
-                
-                current_status_str = "|".join([f"{k}:{v}" for k, v in target_status.items()])
-                last_status_str = config["last_status_str"]
+            for train_name, kana_code in target_trains:
+                direct_url = build_direct_url(config, kana_code)
+                status_obj = scan_train_once(context, direct_url, referer_url)
+                if status_obj:
+                    filtered = filter_status_by_target(status_obj.to_dict(), config["target_facility"])
+                    all_train_results[train_name] = filtered
+                    print(f"    📊 {train_name}: {filtered}")
+                else:
+                    total_success = False
+                    print(f"    ⚠️ {train_name} のデータ取得に失敗しました。")
 
-                print(f"    📊 取得結果: {target_status}")
+            if total_success and all_train_results:
+                current_status_str = ""
+                any_vacant = False
+                status_text = ""
 
-                if last_status_str == "RESET" or current_status_str != last_status_str:
-                    status_text = ""
-                    any_vacant = False
-                    for room_name, mark in target_status.items():
+                for t_name, f_dict in all_train_results.items():
+                    status_text += f"\n🚆【{t_name}】\n"
+                    current_status_str += f"[{t_name}]"
+                    for r_name, mark in f_dict.items():
                         alert = " 🎉空席!!" if mark in ["○", "△", "◇"] else ""
                         if alert: any_vacant = True
-                        status_text += f"・{room_name} ➡️ [ {mark} ]{alert}\n"
+                        status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
+                        current_status_str += f"{r_name}:{mark}|"
 
-                    title = "【🚨 サンライズ空席速報！！】" if any_vacant else "【ℹ️ サンライズ空席状況案内】"
+                # 💡 初回スキャン成功時は空席有無にかかわらず必ず通知、2回目以降は状態変化時のみ通知
+                is_first_run_notify = (last_notified_status is None)
+                has_status_changed = (current_status_str != last_notified_status)
+
+                if is_first_run_notify or has_status_changed:
+                    title = "【🚨 サンライズ空席速報！！】" if any_vacant else "【ℹ️ サンライズ空席状況（現時点）】"
                     msg = (
                         f"{title}\n"
-                        f"[乗車日] {config['month']}月{config['day']}日 | {config['dep']} ➡️ {config['arr']}\n"
-                        f"[希望設備] {config['target_facility']}\n\n"
-                        f"🔥 現在のステータス:\n"
-                        f"===============================\n"
+                        f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n"
+                        f"[希望設備] {config['target_facility']}\n"
+                        f"==============================="
                         f"{status_text}"
                         f"===============================\n"
                     )
-                    print(f"    📢 前回から状態が変化したため（または初回）、LINE通知を送信します！")
+                    log_label = "初回現状報告" if is_first_run_notify else "状態変化検知"
+                    print(f"    📢 [{log_label}] LINE通知を送信します！")
                     send_line(msg)
-                    break
+                    last_notified_status = current_status_str
                 else:
-                    print("    🔕 前回通知したステータスと変化がないため、LINE通知をスキップしました。")
+                    print("    🔕 直前の通知内容と変化がないため、LINE通知をスキップしました。")
             else:
-                print("    ⚠️ 今回の巡回ではデータの完全取得に失敗しました（リトライします）。")
-            
+                print("    ⚠️ 今回の巡回は不完全だったためリトライします。")
+
             if loop_cnt < 9:
                 print("    ⏳ 15秒待機して次の巡回へ進みます...")
                 time.sleep(15)
 
+        context.close()
         browser.close()
 
 if __name__ == "__main__":

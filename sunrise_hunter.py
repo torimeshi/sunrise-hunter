@@ -16,7 +16,7 @@ LINE_USER = os.environ.get("LINE_USER_ID")
 LINE_GROUP = os.environ.get("LINE_GROUP_ID")
 GITHUB_EVENT = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
-# ⏱ 1回の実行で監視を続ける時間（20分間 = 1200秒）
+# ⏱ 1回の実行で監視を続ける時間（20分間）
 RUN_DURATION_SECONDS = 20 * 60
 
 # 列車カナコード (CP932)
@@ -328,9 +328,9 @@ def main():
     print(f"🎯 サンライズハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
     print(f"    狙い設備: {config['target_facility']} | 稼働時間: 約20分間持続")
 
-    is_hourly_report_window = (now_jst.minute < 5) and (GITHUB_EVENT == "schedule")
     is_manual_trigger = (GITHUB_EVENT in ["workflow_dispatch", "repository_dispatch"])
-    has_reported_status = False
+    has_sent_initial_report = False
+    last_reported_hour = None  # 💡 報告済みの時間（例: 16時台に送ったら 16 を記録）
 
     start_time = time.time()
     loop_cnt = 0
@@ -342,11 +342,14 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
 
-        # 💡 起動から20分間（1200秒）が経過するまでループし続ける
         while (time.time() - start_time) < RUN_DURATION_SECONDS:
             loop_cnt += 1
+            current_now_jst = datetime.now(jst)  # 💡 毎回のループで最新の現在時刻を取得
+            current_hour = current_now_jst.hour
+            current_minute = current_now_jst.minute
+            
             elapsed_min = int((time.time() - start_time) / 60)
-            print(f"\n🔍 [巡回 {loop_cnt} 回目 (経過 {elapsed_min} 分)] スキャン開始...")
+            print(f"\n🔍 [巡回 {loop_cnt} 回目 ({current_hour}:{current_minute:02d} / 経過 {elapsed_min} 分)] スキャン開始...")
             raw_results = scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
 
             if raw_results:
@@ -376,8 +379,9 @@ def main():
                     send_line(msg)
                     time.sleep(15)
 
-                elif not has_reported_status:
-                    if is_manual_trigger:
+                else:
+                    # 💡 手動起動・フォーム送信時の初回案内
+                    if is_manual_trigger and not has_sent_initial_report:
                         msg = (
                             f"【ℹ️ サンライズ空席状況案内】\n"
                             f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n"
@@ -388,18 +392,19 @@ def main():
                         )
                         print("    📢 手動起動の初回報告を送信します。")
                         send_line(msg)
-                        has_reported_status = True
+                        has_sent_initial_report = True
 
-                    elif is_hourly_report_window:
+                    # 💡 1時間ごとの定期巡回報告（毎時0分〜10分の間に1回だけ送信）
+                    elif (current_minute <= 10) and (last_reported_hour != current_hour) and (GITHUB_EVENT == "schedule"):
                         msg = (
                             f"【ℹ️ サンライズ定期巡回報告】\n"
                             f"[乗車日] {config['month']}月{config['day']}日 | {dep} ➡️ {arr}\n\n"
                             f"（この1時間の間、5秒おきに空席を探しましたが見つかっていません）\n\n"
                             f"引き続き5秒間隔で常時監視を継続します。"
                         )
-                        print("    📢 1時間ごとの定期報告を送信します。")
+                        print(f"    📢 {current_hour}時台の定期報告を送信します。")
                         send_line(msg)
-                        has_reported_status = True
+                        last_reported_hour = current_hour
 
                 print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
                 time.sleep(5 if not any_vacant else 15)

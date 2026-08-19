@@ -16,6 +16,9 @@ LINE_USER = os.environ.get("LINE_USER_ID")
 LINE_GROUP = os.environ.get("LINE_GROUP_ID")
 GITHUB_EVENT = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
+# ⏱ 1回の実行で監視を続ける時間（20分間 = 1200秒）
+RUN_DURATION_SECONDS = 20 * 60
+
 # 列車カナコード (CP932)
 KANA_SETO = "%BB%BE%C4%20%20000"     # ｻﾝﾗｲｽﾞｾﾄ
 KANA_IZUMO = "%BB%B2%BD%D3%20%20000" # ｻﾝﾗｲｽﾞｲﾂﾞﾓ
@@ -149,7 +152,6 @@ def parse_table_data(soup, seto_status: SunRiseStatus, izumo_status: SunRiseStat
                 a_kinyen = parse_mark_from_td(tds[5])
                 a_kitsuyen = parse_mark_from_td(tds[6])
 
-                # 💡 列車コンテキストの切り替え
                 if "瀬戸" in row_text:
                     current_target = seto_status
                 elif "出雲" in row_text:
@@ -196,16 +198,7 @@ def filter_status_by_target(status_dict, target_facility):
 
     return filtered if filtered else status_dict
 
-def save_error_screenshot(page, prefix):
-    try:
-        filename = f"error_{prefix}_{int(time.time())}.png"
-        page.screenshot(path=filename, full_page=True)
-        print(f"        📸 エラー画面を保存しました: {filename}")
-    except:
-        pass
-
 def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin):
-    """💡 1回のリクエストで画面全体の瀬戸・出雲を一撃回収"""
     page = context.new_page()
     seto_obj = SunRiseStatus()
     izumo_obj = SunRiseStatus()
@@ -221,11 +214,9 @@ def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
         
         html_p1 = page.content()
         if is_e5489_error(page.title(), page.url, html_p1):
-            save_error_screenshot(page, "p1_err")
             page.close()
             return None
 
-        # 1ページ目パース（ノビノビ、シングルツイン、シングルDX）
         parse_table_data(BeautifulSoup(html_p1, "html.parser"), seto_obj, izumo_obj)
 
         change_btn = page.locator("a.popup-link:has-text('この列車を変更')").first
@@ -233,7 +224,6 @@ def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
             change_btn.wait_for(state="visible", timeout=8000)
             change_btn.evaluate("el => el.click()")
         except Exception:
-            save_error_screenshot(page, "change_btn_fail")
             page.close()
             return None
 
@@ -243,7 +233,6 @@ def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
                 later_btn.wait_for(state="visible", timeout=5000)
                 later_btn.evaluate("el => el.click()")
                 
-                # 💡 個室テーブルの描画を確実に待機
                 page.locator("table.train-info-table").first.wait_for(state="visible", timeout=8000)
                 time.sleep(1.0)
                 
@@ -257,11 +246,9 @@ def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
                         change_btn.evaluate("el => el.click()")
                         continue
                     else:
-                        save_error_screenshot(page, "p2_err")
                         page.close()
                         return None
                 else:
-                    # 2ページ目パース（ソロ、シングル、サンライズツイン）
                     parse_table_data(BeautifulSoup(html_p2, "html.parser"), seto_obj, izumo_obj)
                     
                     results = {}
@@ -273,12 +260,10 @@ def scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
                     page.close()
                     return results
             except Exception:
-                save_error_screenshot(page, "popup_timeout")
                 page.close()
                 return None
     except Exception as e:
         print(f"        ⚠️ スキャン処理エラー: {e}")
-        save_error_screenshot(page, "critical_err")
         try:
             page.close()
         except:
@@ -298,7 +283,6 @@ def build_direct_url(config, facility_id):
     encoded_arr = urllib.parse.quote(arr_st.encode("cp932"))
     target_date = f"{int(config['year'])}{int(config['month']):02d}{int(config['day']):02d}"
     
-    # 💡 東京発は21:00、三ノ宮は23:50、出雲市等は14:00
     if config["dep"] == "東京":
         hour, minute = ("21", "00")
     elif config["dep"] == "三ノ宮":
@@ -326,7 +310,6 @@ def main():
 
     config = get_target_config()
 
-    # 過去日付チェック
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     target_midnight = datetime(int(config["year"]), int(config["month"]), int(config["day"]), 23, 59, 59, tzinfo=jst)
@@ -338,17 +321,19 @@ def main():
     is_shikoku = any(s in dep or s in arr for s in SHIKOKU_STATIONS)
     is_sanin = any(s in dep or s in arr for s in SANIN_STATIONS)
 
-    # 検索用カナコード（併結区間なら瀬戸コード1本で両方取得可能）
     search_kana = KANA_IZUMO if is_sanin else KANA_SETO
     direct_url = build_direct_url(config, search_kana)
     referer_url = "https://www.jr-odekake.net/goyoyaku/campaign/sunriseseto_izumo/form.html"
 
     print(f"🎯 サンライズハンター起動: {config['month']}月{config['day']}日 | {dep} ➡️ {arr}")
-    print(f"    狙い設備: {config['target_facility']} | トリガー種別: {GITHUB_EVENT}")
+    print(f"    狙い設備: {config['target_facility']} | 稼働時間: 約20分間持続")
 
     is_hourly_report_window = (now_jst.minute < 5) and (GITHUB_EVENT == "schedule")
     is_manual_trigger = (GITHUB_EVENT in ["workflow_dispatch", "repository_dispatch"])
     has_reported_status = False
+
+    start_time = time.time()
+    loop_cnt = 0
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -357,8 +342,11 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
 
-        for loop_cnt in range(25):
-            print(f"\n🔍 [巡回 {loop_cnt+1}/25 回目] 一撃スキャン開始...")
+        # 💡 起動から20分間（1200秒）が経過するまでループし続ける
+        while (time.time() - start_time) < RUN_DURATION_SECONDS:
+            loop_cnt += 1
+            elapsed_min = int((time.time() - start_time) / 60)
+            print(f"\n🔍 [巡回 {loop_cnt} 回目 (経過 {elapsed_min} 分)] スキャン開始...")
             raw_results = scan_all_trains_once(context, direct_url, referer_url, is_shikoku, is_sanin)
 
             if raw_results:
@@ -375,7 +363,6 @@ def main():
                         status_text += f"・{r_name} ➡️ [ {mark} ]{alert}\n"
 
                 if any_vacant:
-                    # 🚨 空席が出た瞬間は即座に速報通知！
                     msg = (
                         f"【🚨 サンライズ空席速報！！】\n"
                         f"お目当てのキャンセル空席が出ました！\n\n"
@@ -390,7 +377,6 @@ def main():
                     time.sleep(15)
 
                 elif not has_reported_status:
-                    # 💡 手動・GAS起動時の初回現状報告
                     if is_manual_trigger:
                         msg = (
                             f"【ℹ️ サンライズ空席状況案内】\n"
@@ -404,7 +390,6 @@ def main():
                         send_line(msg)
                         has_reported_status = True
 
-                    # 💡 1時間ごとの定期報告
                     elif is_hourly_report_window:
                         msg = (
                             f"【ℹ️ サンライズ定期巡回報告】\n"
@@ -416,7 +401,6 @@ def main():
                         send_line(msg)
                         has_reported_status = True
 
-                # 💡 満席時はMAX頻度（5秒待機）
                 print(f"    ⏳ {'空席検知中のため15秒' if any_vacant else '満席のためMAX頻度(5秒)'} 待機...")
                 time.sleep(5 if not any_vacant else 15)
 
@@ -426,6 +410,7 @@ def main():
 
         context.close()
         browser.close()
+        print(f"🏁 20分間の監視セッションが正常終了しました。(総スキャン回数: {loop_cnt}回)")
 
 if __name__ == "__main__":
     main()

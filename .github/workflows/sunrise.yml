@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ⚡️ [超速チェック] ブラウザをDLする前に日付を確認（わずか2〜3秒で完了）
+      # ⚡️ [超速チェック] タイムアウト対策＆自動リトライ付き日付判定
       - name: Check Target Date
         id: check_date
         env:
@@ -30,43 +30,49 @@ jobs:
         run: |
           pip install requests
           python -c '
-          import os, sys, csv, requests
+          import os, sys, csv, time, requests
           from datetime import datetime, timezone, timedelta
 
           url = os.environ.get("CONFIG_CSV_URL")
-          res = requests.get(url, timeout=10)
-          lines = res.text.splitlines()
-          reader = list(csv.reader(lines))
-          if len(reader) < 2:
-              print("IS_PAST=true")
-              sys.exit(0)
-
-          latest = reader[-1]
-          raw_date = latest[1].replace("/", "-").strip()
-          parts = raw_date.split("-")
           jst = timezone(timedelta(hours=9))
           now_jst = datetime.now(jst)
 
-          if len(parts) == 3:
-              y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-          elif len(parts) == 2:
-              y, m, d = now_jst.year, int(parts[0]), int(parts[1])
-          else:
-              print("IS_PAST=true")
-              sys.exit(0)
+          is_past_val = "false"
 
-          target_midnight = datetime(y, m, d, 23, 59, 59, tzinfo=jst)
-          if target_midnight < now_jst:
-              print("🛑 過去日付のためスキップします。")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("is_past=true\n")
-          else:
-              print("✅ 有効な日付です。監視を継続します。")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("is_past=false\n")
+          # 💡 最大3回リトライして通信タイムアウトを回避
+          for attempt in range(3):
+              try:
+                  res = requests.get(url, timeout=15)
+                  lines = res.text.splitlines()
+                  reader = list(csv.reader(lines))
+                  if len(reader) >= 2:
+                      latest = reader[-1]
+                      raw_date = latest[1].replace("/", "-").strip()
+                      parts = raw_date.split("-")
+                      if len(parts) == 3:
+                          y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                      elif len(parts) == 2:
+                          y, m, d = now_jst.year, int(parts[0]), int(parts[1])
+                      else:
+                          break
+                      
+                      target_midnight = datetime(y, m, d, 23, 59, 59, tzinfo=jst)
+                      if target_midnight < now_jst:
+                          print(f"🛑 乗車日（{m}月{d}日）は過去のためスキップします。")
+                          is_past_val = "true"
+                      else:
+                          print(f"✅ 有効な乗車日（{m}月{d}日）です。監視を継続します。")
+                          is_past_val = "false"
+                  break
+              except Exception as e:
+                  print(f"⚠️ 日付確認リトライ中 ({attempt+1}/3): {e}")
+                  time.sleep(2)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"is_past={is_past_val}\n")
           '
 
-      # 📦 有効な日付のときだけブラウザをインストール（過去日ならスキップ！）
+      # 📦 有効な日付のときだけブラウザをインストール
       - name: Install dependencies
         if: steps.check_date.outputs.is_past == 'false'
         run: |
